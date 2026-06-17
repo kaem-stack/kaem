@@ -3,14 +3,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, StatefulWidget, Widget};
+use unicode_width::UnicodeWidthStr;
 
-use crate::tui::app::Contact;
+use crate::model::Contact;
 use crate::tui::theme;
 
-/// Left-hand contact list.
-///
-/// Minimal: lowercase names, no status dots, unread shown as a cyan count
-/// (received = them). The selected row is a solid amber bar.
 pub struct Sidebar<'a> {
     contacts: &'a [Contact],
     selected: usize,
@@ -21,7 +18,6 @@ impl<'a> Sidebar<'a> {
         Self { contacts, selected }
     }
 
-    /// One row: a left-padded name, with any unread count pinned to the right.
     fn row(contact: &Contact, width: usize) -> ListItem<'static> {
         let mut spans = vec![
             Span::raw(" "),
@@ -30,11 +26,8 @@ impl<'a> Sidebar<'a> {
 
         if contact.unread > 0 {
             let count = contact.unread.to_string();
-            // Leading space + name already used; reserve a 1-col right margin.
-            let used = 1 + contact.name.chars().count();
-            let gap = width
-                .saturating_sub(used + count.chars().count() + 1)
-                .max(1);
+            let used = 1 + contact.name.width();
+            let gap = width.saturating_sub(used + count.width() + 1).max(1);
             spans.push(Span::raw(" ".repeat(gap)));
             spans.push(Span::styled(
                 count,
@@ -48,12 +41,11 @@ impl<'a> Sidebar<'a> {
 
 impl Widget for Sidebar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Width inside the block borders — used to right-align unread counts.
         let inner_width = area.width.saturating_sub(2) as usize;
         let items: Vec<ListItem> = self
             .contacts
             .iter()
-            .map(|c| Sidebar::row(c, inner_width))
+            .map(|c| Self::row(c, inner_width))
             .collect();
 
         let list = List::new(items)

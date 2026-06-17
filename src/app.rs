@@ -1,52 +1,29 @@
+use chrono::{NaiveDate, NaiveTime, Utc};
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
+use tui_input::Input;
 
-use crate::datetime;
+use crate::action::Action;
+use crate::model::{Author, Contact, Message};
 use crate::tui::{events, render};
 
-/// Who authored a message in a conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Author {
-    Me,
-    Them,
-}
-
-/// A single chat message within a conversation.
-#[derive(Debug, Clone)]
-pub struct Message {
-    pub author: Author,
-    pub timestamp: i64, // Unix seconds UTC
-    pub body: String,
-}
-
-/// A peer on the mesh and the conversation we hold with them.
-#[derive(Debug, Clone)]
-pub struct Contact {
-    pub name: String,
-    pub unread: u32,
-    pub last_message: String,
-    pub history: Vec<Message>,
-}
-
-/// Top-level application state. Everything the UI renders is derived from here.
 pub struct App {
     pub running: bool,
     pub contacts: Vec<Contact>,
     pub selected: usize,
-    pub input: String,
+    pub input: Input,
     pub encrypted: bool,
 }
 
 impl App {
-    /// Build the app pre-seeded with a handful of demo contacts.
     pub fn new() -> Self {
-        // Anchor demo timestamps to actual today/yesterday so date labels are always live.
-        let now = datetime::now();
-        let day = (now / 86_400) * 86_400; // today midnight UTC
-        let yest = day - 86_400; // yesterday midnight UTC
+        let today = Utc::now().date_naive();
+        let yesterday = today.pred_opt().unwrap_or(today);
 
-        // Helpers: hhmm offset → unix seconds
-        let t = |base: i64, h: i64, m: i64| base + h * 3600 + m * 60;
+        let at = |date: NaiveDate, h: u32, m: u32| {
+            date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap())
+                .and_utc()
+        };
 
         let contacts = vec![
             Contact {
@@ -54,67 +31,64 @@ impl App {
                 unread: 0,
                 last_message: "nice, ttyl".into(),
                 history: vec![
-                    // ── yesterday ────────────────────────────────────────
                     Message {
                         author: Author::Them,
-                        timestamp: t(yest, 10, 30),
+                        timestamp: at(yesterday, 10, 30),
                         body: "hey, are you on the new repeater?".into(),
                     },
                     Message {
                         author: Author::Me,
-                        timestamp: t(yest, 10, 31),
+                        timestamp: at(yesterday, 10, 31),
                         body: "yep, just hopped on. signal's clean".into(),
                     },
                     Message {
                         author: Author::Them,
-                        timestamp: t(yest, 10, 32),
+                        timestamp: at(yesterday, 10, 32),
                         body: "how's the mesh holding up?".into(),
                     },
-                    // quick burst — these three merge into one block
                     Message {
                         author: Author::Me,
-                        timestamp: t(yest, 10, 33),
+                        timestamp: at(yesterday, 10, 33),
                         body: "solid".into(),
                     },
                     Message {
                         author: Author::Me,
-                        timestamp: t(yest, 10, 33),
+                        timestamp: at(yesterday, 10, 33),
                         body: "way better than the old node".into(),
                     },
                     Message {
                         author: Author::Me,
-                        timestamp: t(yest, 10, 34),
+                        timestamp: at(yesterday, 10, 34),
                         body: "we should drop a third repeater by the ridge".into(),
                     },
                     Message {
                         author: Author::Them,
-                        timestamp: t(yest, 10, 36),
+                        timestamp: at(yesterday, 10, 36),
                         body: "agreed".into(),
                     },
                     Message {
                         author: Author::Them,
-                        timestamp: t(yest, 10, 36),
+                        timestamp: at(yesterday, 10, 36),
                         body: "i'll bring the hardware tomorrow".into(),
                     },
-                    // ── today ─────────────────────────────────────────────
                     Message {
                         author: Author::Them,
-                        timestamp: t(day, 9, 15),
+                        timestamp: at(today, 9, 15),
                         body: "did you get the hardware set up?".into(),
                     },
                     Message {
                         author: Author::Me,
-                        timestamp: t(day, 9, 17),
+                        timestamp: at(today, 9, 17),
                         body: "working on it now".into(),
                     },
                     Message {
                         author: Author::Me,
-                        timestamp: t(day, 9, 17),
+                        timestamp: at(today, 9, 17),
                         body: "connector was the wrong gauge but i rigged it".into(),
                     },
                     Message {
                         author: Author::Them,
-                        timestamp: t(day, 9, 20),
+                        timestamp: at(today, 9, 20),
                         body: "nice, ttyl".into(),
                     },
                 ],
@@ -125,7 +99,7 @@ impl App {
                 last_message: "ttyl".into(),
                 history: vec![Message {
                     author: Author::Them,
-                    timestamp: t(yest, 9, 58),
+                    timestamp: at(yesterday, 9, 58),
                     body: "heading off-grid, ttyl".into(),
                 }],
             },
@@ -135,7 +109,7 @@ impl App {
                 last_message: "ping me when you see this".into(),
                 history: vec![Message {
                     author: Author::Them,
-                    timestamp: t(day, 10, 40),
+                    timestamp: at(today, 10, 40),
                     body: "ping me when you see this".into(),
                 }],
             },
@@ -145,7 +119,7 @@ impl App {
                 last_message: "relay node is up".into(),
                 history: vec![Message {
                     author: Author::Them,
-                    timestamp: t(day, 8, 12),
+                    timestamp: at(today, 8, 12),
                     body: "relay node is up on channel 7".into(),
                 }],
             },
@@ -155,27 +129,38 @@ impl App {
             running: true,
             contacts,
             selected: 0,
-            input: String::new(),
+            input: Input::default(),
             encrypted: true,
         }
     }
 
-    /// Drive the draw/event loop until the user quits.
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while self.running {
             terminal.draw(|frame| render::render(&self, frame))?;
-            events::handle(&mut self)?;
+            if let Some(action) = events::poll()? {
+                self.handle(action);
+            }
         }
         Ok(())
     }
 
-    /// The contact whose conversation is currently open.
+    pub fn handle(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.running = false,
+            Action::NextContact => self.next_contact(),
+            Action::PreviousContact => self.previous_contact(),
+            Action::SendMessage => self.send_message(),
+            Action::Input(req) => {
+                self.input.handle(req);
+            }
+        }
+    }
+
     pub fn selected_contact(&self) -> &Contact {
         &self.contacts[self.selected]
     }
 
-    /// Move the selection to the next contact, wrapping around.
-    pub fn next_contact(&mut self) {
+    fn next_contact(&mut self) {
         if self.contacts.is_empty() {
             return;
         }
@@ -183,8 +168,7 @@ impl App {
         self.mark_read();
     }
 
-    /// Move the selection to the previous contact, wrapping around.
-    pub fn previous_contact(&mut self) {
+    fn previous_contact(&mut self) {
         if self.contacts.is_empty() {
             return;
         }
@@ -193,29 +177,22 @@ impl App {
         self.mark_read();
     }
 
-    /// Send the buffered input as a message to the selected contact.
-    pub fn send_message(&mut self) {
-        let body = self.input.trim().to_string();
+    fn send_message(&mut self) {
+        let body = self.input.value().trim().to_string();
         if body.is_empty() {
             return;
         }
+        self.input = Input::default();
         if let Some(contact) = self.contacts.get_mut(self.selected) {
             contact.history.push(Message {
                 author: Author::Me,
-                timestamp: datetime::now(),
+                timestamp: Utc::now(),
                 body: body.clone(),
             });
             contact.last_message = body;
         }
-        self.input.clear();
     }
 
-    /// Stop the event loop.
-    pub fn quit(&mut self) {
-        self.running = false;
-    }
-
-    /// Clear the unread badge on the currently selected contact.
     fn mark_read(&mut self) {
         if let Some(contact) = self.contacts.get_mut(self.selected) {
             contact.unread = 0;
@@ -228,4 +205,3 @@ impl Default for App {
         Self::new()
     }
 }
-

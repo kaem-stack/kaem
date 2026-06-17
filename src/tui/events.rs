@@ -1,36 +1,39 @@
 use std::time::Duration;
 
 use color_eyre::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use tui_input::InputRequest;
 
-use crate::tui::app::App;
+use crate::action::Action;
 
-/// How long to wait for an event before yielding back to the draw loop.
 const TICK: Duration = Duration::from_millis(100);
 
-/// Poll for a single terminal event and apply it to the app state.
-pub fn handle(app: &mut App) -> Result<()> {
-    if event::poll(TICK)?
-        && let Event::Key(key) = event::read()?
-        && key.kind == KeyEventKind::Press
-    {
-        handle_key(app, key);
+pub fn poll() -> Result<Option<Action>> {
+    if !event::poll(TICK)? {
+        return Ok(None);
     }
-    Ok(())
+    Ok(to_action(&event::read()?))
 }
 
-/// Translate a key press into a state mutation.
-fn handle_key(app: &mut App, key: KeyEvent) {
+fn to_action(event: &Event) -> Option<Action> {
+    let Event::Key(key) = event else { return None };
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+
     match key.code {
-        KeyCode::Esc => app.quit(),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
-        KeyCode::Up => app.previous_contact(),
-        KeyCode::Down => app.next_contact(),
-        KeyCode::Enter => app.send_message(),
-        KeyCode::Backspace => {
-            app.input.pop();
-        }
-        KeyCode::Char(c) => app.input.push(c),
-        _ => {}
+        KeyCode::Esc => Some(Action::Quit),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+        KeyCode::Up => Some(Action::PreviousContact),
+        KeyCode::Down => Some(Action::NextContact),
+        KeyCode::Enter => Some(Action::SendMessage),
+        KeyCode::Char(c) => Some(Action::Input(InputRequest::InsertChar(c))),
+        KeyCode::Backspace => Some(Action::Input(InputRequest::DeletePrevChar)),
+        KeyCode::Delete => Some(Action::Input(InputRequest::DeleteNextChar)),
+        KeyCode::Left => Some(Action::Input(InputRequest::GoToPrevChar)),
+        KeyCode::Right => Some(Action::Input(InputRequest::GoToNextChar)),
+        KeyCode::Home => Some(Action::Input(InputRequest::GoToStart)),
+        KeyCode::End => Some(Action::Input(InputRequest::GoToEnd)),
+        _ => None,
     }
 }

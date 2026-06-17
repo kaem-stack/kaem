@@ -1,9 +1,11 @@
-mod datetime;
+mod action;
+mod app;
+mod model;
 mod tui;
 
 use color_eyre::Result;
 
-use crate::tui::App;
+use crate::app::App;
 
 fn main() -> Result<()> {
     color_eyre::install()?;

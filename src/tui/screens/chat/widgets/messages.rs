@@ -1,25 +1,17 @@
+use chrono::{NaiveDate, Utc};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthStr;
 
-use crate::datetime;
-use crate::tui::app::Author;
-use crate::tui::app::Contact;
+use crate::model::{Author, Contact, Message};
 use crate::tui::theme;
 
-/// Consecutive messages from the same sender are grouped if they arrive within this window.
 const GROUP_WINDOW_SECS: i64 = 5 * 60;
-/// Longest sender label the name column will reserve.
 const SENDER_CAP: usize = 12;
 
-/// Conversation history rendered as a dense operator log.
-///
-/// One row per message line, filling top-down. Columns: a dim time gutter, a
-/// colored lane bar (amber = you, gray = them) that runs the height of each
-/// speaker block, the sender name (printed once per block), then the text.
-/// Direction is always readable from the lane color, even on grouped lines.
 pub struct MessagePanel<'a> {
     contact: &'a Contact,
 }
@@ -42,14 +34,12 @@ impl Widget for MessagePanel<'_> {
             return;
         }
 
-        let sender_w = self.contact.name.chars().count().clamp(3, SENDER_CAP);
-        // time(5) + sp + bar(1) + sp + sender + 2 spaces.
+        let sender_w = self.contact.name.width().clamp(3, SENDER_CAP);
         let text_start = sender_w + 10;
         let text_w = (field.width as usize).saturating_sub(text_start).max(8);
 
-        let lines = self.lines(sender_w, text_w, field.width as usize);
+        let lines = self.build_lines(sender_w, text_w, field.width as usize);
 
-        // Anchor newest to the bottom: keep only the tail that fits, render down.
         let visible = field.height as usize;
         let start = lines.len().saturating_sub(visible);
         for (row, line) in lines.into_iter().skip(start).enumerate() {
@@ -64,59 +54,56 @@ impl Widget for MessagePanel<'_> {
     }
 }
 
+struct PrevMsg<'a> {
+    message: &'a Message,
+    date: NaiveDate,
+}
+
 impl MessagePanel<'_> {
-    fn lines(&self, sender_w: usize, text_w: usize, full_w: usize) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line> = Vec::new();
-        let mut prev_author: Option<Author> = None;
-        let mut prev_ts: Option<i64> = None;
-        let mut prev_day: Option<i64> = None;
-        let today = datetime::epoch_day(datetime::now());
+    fn build_lines(&self, sender_w: usize, text_w: usize, full_w: usize) -> Vec<Line<'static>> {
+        let mut out: Vec<Line> = Vec::new();
+        let mut prev: Option<PrevMsg> = None;
+        let today = Utc::now().date_naive();
 
         for message in &self.contact.history {
-            let cur_day = datetime::epoch_day(message.timestamp);
+            let cur_date = message.timestamp.date_naive();
             let (color, sender) = match message.author {
                 Author::Me => (theme::ME, "you".to_string()),
                 Author::Them => (theme::THEM, self.contact.name.clone()),
             };
 
-            let day_changed = prev_day.map_or(true, |d| d != cur_day);
+            let day_changed = prev.as_ref().is_none_or(|p| p.date != cur_date);
 
             if day_changed {
-                if !lines.is_empty() {
-                    lines.push(Line::default());
+                if !out.is_empty() {
+                    out.push(Line::default());
                 }
-                lines.push(date_separator(
-                    &datetime::day_label(cur_day, today),
-                    full_w,
-                ));
-                lines.push(Line::default());
+                out.push(date_separator(&day_label(cur_date, today), full_w));
+                out.push(Line::default());
             }
 
             let new_block = day_changed
-                || match (prev_author, prev_ts) {
-                    (Some(a), Some(p)) => {
-                        a != message.author
-                            || (message.timestamp - p) > GROUP_WINDOW_SECS
-                    }
-                    (Some(a), None) => a != message.author,
-                    _ => true,
-                };
+                || prev.as_ref().is_none_or(|p| {
+                    p.message.author != message.author
+                        || (message.timestamp - p.message.timestamp).num_seconds()
+                            > GROUP_WINDOW_SECS
+                });
 
-            if !day_changed && new_block && !lines.is_empty() {
-                lines.push(Line::default());
+            if !day_changed && new_block && !out.is_empty() {
+                out.push(Line::default());
             }
 
             for (i, segment) in wrap(&message.body, text_w).into_iter().enumerate() {
-                let first_in_block = i == 0 && new_block;
-                let time = if first_in_block {
+                let first = i == 0 && new_block;
+                let time = if first {
                     Span::styled(
-                        format!("{:<5}", datetime::hhmm(message.timestamp)),
+                        format!("{:<5}", message.timestamp.format("%H:%M")),
                         theme::meta(),
                     )
                 } else {
                     Span::raw(" ".repeat(5))
                 };
-                let name = if first_in_block {
+                let name = if first {
                     Span::styled(
                         format!("{sender:<sender_w$}"),
                         Style::new().fg(color).add_modifier(Modifier::BOLD),
@@ -125,7 +112,7 @@ impl MessagePanel<'_> {
                     Span::raw(" ".repeat(sender_w))
                 };
 
-                lines.push(Line::from(vec![
+                out.push(Line::from(vec![
                     time,
                     Span::raw(" "),
                     Span::styled("│", Style::new().fg(color)),
@@ -136,19 +123,23 @@ impl MessagePanel<'_> {
                 ]));
             }
 
-            prev_author = Some(message.author);
-            prev_ts = Some(message.timestamp);
-            prev_day = Some(cur_day);
+            prev = Some(PrevMsg { message, date: cur_date });
         }
-        lines
+        out
     }
 }
 
-/// Centered date separator with faint rules on each side, like WhatsApp.
+fn day_label(date: NaiveDate, today: NaiveDate) -> String {
+    match (today - date).num_days() {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        _ => date.format("%b %-d, %Y").to_string(),
+    }
+}
+
 fn date_separator(label: &str, width: usize) -> Line<'static> {
     let padded = format!(" {label} ");
-    let pad_len = padded.chars().count();
-    let fill = width.saturating_sub(pad_len);
+    let fill = width.saturating_sub(padded.width());
     let left = fill / 2;
     let right = fill.saturating_sub(left);
     Line::from(vec![
@@ -158,7 +149,6 @@ fn date_separator(label: &str, width: usize) -> Line<'static> {
     ])
 }
 
-/// Greedy word-wrap to `width` columns (ASCII-width approximation).
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -166,7 +156,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     for word in text.split_whitespace() {
         if current.is_empty() {
             current.push_str(word);
-        } else if current.chars().count() + 1 + word.chars().count() <= width {
+        } else if current.width() + 1 + word.width() <= width {
             current.push(' ');
             current.push_str(word);
         } else {

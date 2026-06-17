@@ -3,29 +3,16 @@ pub mod widgets;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::tui::app::App;
+use crate::app::App;
 use widgets::input::InputBar;
 use widgets::messages::MessagePanel;
 use widgets::sidebar::Sidebar;
 use widgets::statusbar::StatusBar;
 
-/// Lay out and render the chat screen within `area`.
-///
-/// ```text
-/// ┌ contacts ┬ messages ─────────────┐
-/// │          │                       │
-/// │          ├───────────────────────┤
-/// │          │ input                 │
-/// ├──────────┴───────────────────────┤
-/// │ status bar                       │
-/// └──────────────────────────────────┘
-/// ```
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let [body, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-
     let [sidebar, conversation] =
         Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(body);
-
     let [messages, input] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(conversation);
 

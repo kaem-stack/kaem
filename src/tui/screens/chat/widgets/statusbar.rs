@@ -6,9 +6,6 @@ use ratatui::widgets::Widget;
 
 use crate::tui::theme;
 
-/// Single-row footer: keybinds on the left, encryption state on the right.
-///
-/// Minimal: lowercase, amber keys, dim labels, no icons.
 pub struct StatusBar {
     encrypted: bool,
 }

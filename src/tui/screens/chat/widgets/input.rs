@@ -3,37 +3,38 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use tui_input::Input;
 
 use crate::tui::theme;
 
-/// Bottom input bar where the user composes a message.
-///
-/// Minimal: no title, an amber `>` prompt, a dim placeholder while empty, and
-/// a solid amber caret once typing begins.
 pub struct InputBar<'a> {
-    input: &'a str,
+    input: &'a Input,
 }
 
 impl<'a> InputBar<'a> {
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: &'a Input) -> Self {
         Self { input }
     }
 }
 
 impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let prompt = Span::styled(
-            "> ",
-            Style::new().fg(theme::ME).add_modifier(Modifier::BOLD),
-        );
+        let prompt = Span::styled("> ", Style::new().fg(theme::ME).add_modifier(Modifier::BOLD));
 
-        let line = if self.input.is_empty() {
+        let value = self.input.value();
+        let cursor = self.input.cursor();
+
+        let line = if value.is_empty() {
             Line::from(vec![prompt, Span::styled("type a message", theme::meta())])
         } else {
+            let chars: Vec<char> = value.chars().collect();
+            let before: String = chars[..cursor.min(chars.len())].iter().collect();
+            let after: String = chars[cursor.min(chars.len())..].iter().collect();
             Line::from(vec![
                 prompt,
-                Span::styled(self.input, Style::new().fg(theme::TEXT)),
+                Span::styled(before, Style::new().fg(theme::TEXT)),
                 Span::styled("█", Style::new().fg(theme::ME)),
+                Span::styled(after, Style::new().fg(theme::TEXT)),
             ])
         };
 
