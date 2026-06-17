@@ -2,6 +2,7 @@ mod action;
 mod app;
 mod codec;
 mod core;
+mod radio;
 mod tui;
 
 use color_eyre::Result;
