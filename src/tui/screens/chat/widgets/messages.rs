@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{Author, Contact, Message};
+use crate::core::model::{Author, Contact, Message};
 use crate::tui::theme;
 
 const GROUP_WINDOW_SECS: i64 = 5 * 60;

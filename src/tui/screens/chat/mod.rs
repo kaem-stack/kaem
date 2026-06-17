@@ -3,7 +3,7 @@ pub mod widgets;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::app::Chat;
+use crate::core::chat::Chat;
 use widgets::input::InputBar;
 use widgets::messages::MessagePanel;
 use widgets::sidebar::Sidebar;

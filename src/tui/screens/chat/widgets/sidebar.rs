@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, StatefulWidget, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::Contact;
+use crate::core::model::Contact;
 use crate::tui::theme;
 
 pub struct Sidebar<'a> {

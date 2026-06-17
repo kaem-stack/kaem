@@ -1,6 +1,6 @@
 mod action;
 mod app;
-mod model;
+mod core;
 mod tui;
 
 use color_eyre::Result;
