@@ -7,12 +7,66 @@ use crate::action::Action;
 use crate::model::{Author, Contact, Message};
 use crate::tui::{events, render};
 
-pub struct App {
-    pub running: bool,
+pub struct Chat {
     pub contacts: Vec<Contact>,
     pub selected: usize,
     pub input: Input,
     pub encrypted: bool,
+}
+
+impl Chat {
+    pub fn selected_contact(&self) -> &Contact {
+        &self.contacts[self.selected]
+    }
+
+    pub fn next_contact(&mut self) {
+        if self.contacts.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.contacts.len();
+        self.mark_read();
+    }
+
+    pub fn previous_contact(&mut self) {
+        if self.contacts.is_empty() {
+            return;
+        }
+        let len = self.contacts.len();
+        self.selected = (self.selected + len - 1) % len;
+        self.mark_read();
+    }
+
+    pub fn send_message(&mut self) {
+        let body = self.input.value().trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+        self.input = Input::default();
+        if let Some(contact) = self.contacts.get_mut(self.selected) {
+            contact.history.push(Message {
+                author: Author::Me,
+                timestamp: Utc::now(),
+                body: body.clone(),
+            });
+            contact.last_message = body;
+        }
+    }
+
+    fn mark_read(&mut self) {
+        if let Some(contact) = self.contacts.get_mut(self.selected) {
+            contact.unread = 0;
+        }
+    }
+}
+
+pub struct Ui {
+    pub chat: Chat,
+}
+
+pub struct App {
+    pub running: bool,
+    pub signal: u8,
+    pub ui: Ui,
 }
 
 impl App {
@@ -127,10 +181,15 @@ impl App {
 
         Self {
             running: true,
-            contacts,
-            selected: 0,
-            input: Input::default(),
-            encrypted: true,
+            signal: 75,
+            ui: Ui {
+                chat: Chat {
+                    contacts,
+                    selected: 0,
+                    input: Input::default(),
+                    encrypted: true,
+                },
+            },
         }
     }
 
@@ -147,55 +206,10 @@ impl App {
     pub fn handle(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
-            Action::NextContact => self.next_contact(),
-            Action::PreviousContact => self.previous_contact(),
-            Action::SendMessage => self.send_message(),
-            Action::Input(req) => {
-                self.input.handle(req);
-            }
-        }
-    }
-
-    pub fn selected_contact(&self) -> &Contact {
-        &self.contacts[self.selected]
-    }
-
-    fn next_contact(&mut self) {
-        if self.contacts.is_empty() {
-            return;
-        }
-        self.selected = (self.selected + 1) % self.contacts.len();
-        self.mark_read();
-    }
-
-    fn previous_contact(&mut self) {
-        if self.contacts.is_empty() {
-            return;
-        }
-        let len = self.contacts.len();
-        self.selected = (self.selected + len - 1) % len;
-        self.mark_read();
-    }
-
-    fn send_message(&mut self) {
-        let body = self.input.value().trim().to_string();
-        if body.is_empty() {
-            return;
-        }
-        self.input = Input::default();
-        if let Some(contact) = self.contacts.get_mut(self.selected) {
-            contact.history.push(Message {
-                author: Author::Me,
-                timestamp: Utc::now(),
-                body: body.clone(),
-            });
-            contact.last_message = body;
-        }
-    }
-
-    fn mark_read(&mut self) {
-        if let Some(contact) = self.contacts.get_mut(self.selected) {
-            contact.unread = 0;
+            Action::NextContact => self.ui.chat.next_contact(),
+            Action::PreviousContact => self.ui.chat.previous_contact(),
+            Action::SendMessage => self.ui.chat.send_message(),
+            Action::Input(req) => { self.ui.chat.input.handle(req); }
         }
     }
 }
