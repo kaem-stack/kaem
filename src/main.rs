@@ -1,5 +1,6 @@
 mod action;
 mod app;
+mod codec;
 mod core;
 mod tui;
 
