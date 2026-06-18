@@ -23,7 +23,7 @@ cargo fmt                           # format
 ### Running the app
 
 The binary chooses identity and transport from the environment, so two instances
-can be launched side by side without rebuilding (see `crates/kaem/src/main.rs`):
+can be launched side by side without rebuilding (see `binaries/kaem/src/main.rs`):
 
 ```bash
 # Two nodes that talk to each other over the simulated radio (default transport):
@@ -51,10 +51,10 @@ across several crates; read them as one system:
 - `kaem-radio`, `kaem-udp`, `kaem-loopback` — **adapters**, each its own crate
   depending only on `kaem-transport`. `kaem-radio` is the real target; `kaem-udp`
   and `kaem-loopback` are development scaffolding, not real links.
-- `crates/kaem` (the binary) is the **composition root** — the *only* place that
-  names concrete adapter crates. `Settings::open()` in `main.rs` is the factory
-  that maps `KAEM_TRANSPORT` to an adapter. Nothing else in the workspace sees a
-  concrete transport; the chat domain holds a `Box<dyn Transport>`.
+- `binaries/kaem` (the binary) is the **composition root** — the *only* place
+  that names concrete adapter crates. `Settings::open()` in `main.rs` is the
+  factory that maps `KAEM_TRANSPORT` to an adapter. Nothing else in the
+  workspace sees a concrete transport; the chat domain holds a `Box<dyn Transport>`.
 
 **To add a transport:** new crate depending on `kaem-transport`, plus one match
 arm in `Settings::open()` and one dependency line. Never add the factory or
@@ -69,30 +69,56 @@ adapter selection to `kaem-transport`.
    complex baseband `Iq` samples; `demodulate` recovers the bytes via a
    quadrature frequency discriminator. A frame that fails CRC is dropped like
    line noise.
-2. `channel` — `trait Channel { transmit, receive }`, the seam between DSP and
-   the radio. `UdpChannel` implements it over UDP (the simulated airwaves),
-   fragmenting/reassembling IQ bursts that exceed one datagram. A real SDR
-   (SoapySDR/HackRF/Pluto) becomes a different `Channel` impl; the modem and the
-   `Transport` interface above it never change.
+2. `channel` — `trait Channel { transmit, receive, local_addr }`, the seam
+   between DSP and the radio. `UdpChannel` implements it over UDP (the
+   simulated airwaves), fragmenting/reassembling IQ bursts that exceed one
+   datagram; `kaem-sim`'s `SimChannel` implements it over an in-process medium
+   instead. A real SDR (SoapySDR/HackRF/Pluto) becomes a different `Channel`
+   impl; the modem and the `Transport` interface above it never change.
+   `RadioTransport` holds a `Box<dyn Channel>`, so it's channel-generic.
 
 **Iteration on the radio happens inside `kaem-radio`** (swap the modem or the
 channel), not at the `Transport` level.
 
 ### Application layers
 
-- `kaem-codec` — the wire protocol: `WireMessage { from, to, body }` <-> a
-  self-describing byte frame (magic `KM`, version, length-prefixed fields,
-  CRC-16/CCITT). It owns *what* goes over the link, never *how*.
+- `kaem-codec` — the wire protocol. `WireMessage { from, to, body }` <-> a
+  self-describing byte frame (magic `KM`). `Envelope { chatroom_id,
+  message_id, ttl, ciphertext }` (magic `KE`) is a second, independent frame
+  format for the encrypted flood-relay mesh — distinct magic bytes so the two
+  can never be confused while decoding. Both use length-prefixed fields and
+  CRC-16/CCITT.
 - `kaem-crypto` — post-quantum hybrid encryption (ML-KEM-768 KEM +
   ChaCha20-Poly1305), a fresh shared key per message. Split into `keys`
-  (generate/persist keypairs) and `crypto` (`encrypt`/`decrypt`), each hidden
-  behind an algorithm trait + a `factory::create` dispatch so another scheme can
-  slot in beside ML-KEM-768 without touching callers. **Not yet wired into the
-  binary** — it builds as a workspace member but nothing depends on it.
-- `crates/kaem` — the CLI/TUI binary. The chat domain (`core/chat.rs`) depends
-  only on `Transport` + `kaem-codec`; the UI is ratatui (`tui/`), one `Widget`
-  per panel. UI tick: `chat.poll()` drains received frames, then draw, then
-  handle one input action.
+  (generate/persist keypairs), `crypto` (`encrypt`/`decrypt`, each hidden
+  behind an algorithm trait + a `factory::create` dispatch so another scheme
+  can slot in beside ML-KEM-768 without touching callers), and `symmetric`
+  (`seal`/`open` under a chatroom's shared key, for `kaem-mesh`).
+- `kaem-node` — the steppable chat core extracted out of the `kaem` binary:
+  `Node` owns a callsign and contact list, takes a virtual `Time` on every
+  call, and owns no transport/clock itself. Same core drives the live TUI and
+  the sandbox.
+- `kaem-pairing` — identity + chatroom membership for the mesh: mints an
+  ML-KEM-768 keypair (`Identity`) and a `Chatroom { id, peer, key }` via a real
+  KEM encapsulation (`handshake::pair`/`accept`); `Store` persists rows
+  sqlite-backed (in-memory for now).
+- `kaem-mesh` — composes around `kaem-node::Node` to add pairing + encrypted
+  flood relay (`MeshNode`), without changing `Node`'s own surface — `kaem`'s
+  TUI binary depends on that surface directly and keeps compiling unchanged.
+  Seals `WireMessage`s into `Envelope`s under a chatroom key; relays envelopes
+  it can't decrypt with a decremented TTL so unpaired hops still carry traffic.
+- `kaem-sim` — an in-process RF medium (`Medium`) that carries the same
+  `kaem-radio` baseband `Iq` samples a UDP/SDR link would, between in-memory
+  nodes positioned in a 2D field; `SimChannel` is the `Channel` impl that
+  plugs it into `RadioTransport`. Single-threaded by design (`Rc<RefCell<_>>`),
+  so `step` mode in the sandbox is exactly reproducible.
+- `binaries/kaem` — the CLI/TUI chat binary. The chat domain (`core/chat.rs`)
+  wraps `kaem-node::Node` plus UI-only state (open contact, input buffer); the
+  UI is ratatui (`tui/`), one `Widget` per panel. UI tick: `chat.poll()`
+  drains received frames, then draw, then handle one input action.
+- `binaries/kaem-sandbox` — the Packet Tracer-style operator console (egui):
+  spawns nodes into a `kaem-sim::Medium`, places them on a field, drives
+  pairing and chat through `kaem-mesh::MeshNode`. See `docs/SANDBOX_PLAN.md`.
 
 ## Conventions
 
@@ -103,9 +129,27 @@ channel), not at the `Transport` level.
 - Transmit failures must never take the UI down — the chat domain swallows link
   errors (a status line is the intended place to surface them later).
 
+## Workflow
+
+- Commit as you go, in small logical slices — one crate, one seam, one
+  refactor per commit — the way the existing history on this repo does it.
+  Don't let unrelated changes pile up uncommitted across multiple features.
+- Match the existing commit style: `type(scope): short imperative summary`
+  (e.g. `feat(sim): add Medium + SimChannel`, `refactor(radio): rename sdr
+  crate to kaem-radio`). Scope is usually the crate/module touched.
+- Prefer a build/test-green state at each commit where practical — it keeps
+  `git bisect` and review useful.
+
 ## Planned direction
 
-`docs/SANDBOX_PLAN.md` describes the next major effort: a Packet Tracer-style
-sandbox that spawns many nodes in one process, with a workspace reorg into
-`crates/` (libraries) and `binaries/` (apps). Treat that doc as the source of
-truth for that work; the layout above is the current state.
+`docs/SANDBOX_PLAN.md` describes the current effort: a Packet Tracer-style
+sandbox that spawns many nodes in one process, simulating the RF medium
+in-process instead of over real UDP/SDR. The workspace has already been
+reorganized into `crates/` (libraries) and `binaries/` (apps) per that plan;
+the doc's "Suggested commit sequence" section is the map of phases:
+workspace split -> extract `kaem-node` (steppable chat core) -> make
+`kaem-radio` channel-generic -> `kaem-sim` (in-process `Medium`/`SimChannel`)
+-> `kaem-pairing`/`kaem-mesh` (ML-KEM pairing + encrypted flood-relay) ->
+`binaries/kaem-sandbox` (the egui operator console). Treat that doc as the
+source of truth for this work; the layout above (`Architecture`) is kept in
+sync with whatever has actually landed.
