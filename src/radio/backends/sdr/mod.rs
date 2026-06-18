@@ -29,6 +29,7 @@ impl SdrRadio {
     }
 
     /// The address actually bound (useful when the caller passed port 0).
+    #[allow(dead_code)] // used in tests; useful for a future status line
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.channel.local_addr()
     }

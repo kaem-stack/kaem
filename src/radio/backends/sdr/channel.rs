@@ -55,6 +55,7 @@ impl UdpChannel {
         })
     }
 
+    #[allow(dead_code)] // used in tests; useful for a future status line
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
     }

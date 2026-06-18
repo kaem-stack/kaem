@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn truncation_is_rejected() {
         let frame = encode(&sample());
-        assert!(matches!(decode(&frame[..frame.len() - 1]), Err(_)));
+        assert!(decode(&frame[..frame.len() - 1]).is_err());
     }
 
     #[test]
