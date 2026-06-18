@@ -743,10 +743,20 @@ dependencies = [
  "chrono",
  "color-eyre",
  "crossterm 0.29.0",
+ "kaem-codec",
+ "kaem-radio",
  "ratatui 0.30.1",
  "tui-input",
  "unicode-width 0.2.2",
 ]
+
+[[package]]
+name = "kaem-codec"
+version = "0.1.0"
+
+[[package]]
+name = "kaem-radio"
+version = "0.1.0"
 
 [[package]]
 name = "kasuari"

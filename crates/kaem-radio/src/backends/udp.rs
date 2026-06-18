@@ -9,7 +9,7 @@
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use crate::radio::{Link, Radio, RadioError};
+use crate::{Link, Radio, RadioError};
 
 /// Largest UDP payload (theoretical max for an IPv4 datagram).
 const MAX_DATAGRAM: usize = 65_507;

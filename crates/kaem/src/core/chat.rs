@@ -1,9 +1,10 @@
 use chrono::Utc;
 use tui_input::Input;
 
-use crate::codec::{self, WireMessage};
+use kaem_codec::{WireMessage, decode, encode};
+use kaem_radio::Radio;
+
 use crate::core::model::{Author, Contact, Message};
-use crate::radio::Radio;
 
 /// The chat domain. It owns the conversation state and drives the link: it
 /// encodes outgoing messages onto the radio and folds decoded incoming frames
@@ -77,14 +78,14 @@ impl Chat {
         };
         // The message is already on screen; a transmit failure must not take the
         // UI down with it. Surfacing link errors is a job for a later status line.
-        let _ = self.radio.send(&codec::encode(&message));
+        let _ = self.radio.send(&encode(&message));
     }
 
     /// Drain frames the radio has received and fold them into the conversation.
     /// Called once per UI tick.
     pub fn poll(&mut self) {
         while let Ok(Some(frame)) = self.radio.recv() {
-            let Ok(message) = codec::decode(&frame) else {
+            let Ok(message) = decode(&frame) else {
                 continue; // not a valid kaem frame; drop it
             };
             if message.from == self.callsign {

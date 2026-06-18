@@ -1,9 +1,16 @@
-[package]
-name = "kaem"
+[workspace]
+resolver = "3"
+members = ["crates/kaem", "crates/kaem-codec", "crates/kaem-radio"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+# internal crates
+kaem-codec = { path = "crates/kaem-codec" }
+kaem-radio = { path = "crates/kaem-radio" }
+# third-party
 chrono = "0.4"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

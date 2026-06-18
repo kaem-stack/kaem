@@ -1,24 +1,22 @@
 mod action;
 mod app;
-mod codec;
 mod core;
-mod radio;
 mod tui;
 
 use std::net::SocketAddr;
 
 use color_eyre::Result;
+use kaem_radio::{Config, Link, open};
 
 use crate::app::App;
-use crate::radio::{Config, Link};
 
 fn main() -> Result<()> {
     color_eyre::install()?;
     let (config, callsign) = settings_from_env();
 
-    // All connection logic lives in the radio module; here we only choose what
+    // All connection logic lives in the radio crate; here we only choose what
     // to open and hand the live transport to the app.
-    let radio = radio::open(config)?;
+    let radio = open(config)?;
 
     let terminal = ratatui::init();
     let result = App::new(radio, callsign).run(terminal);

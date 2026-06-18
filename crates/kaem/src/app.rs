@@ -1,10 +1,11 @@
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
 
+use kaem_radio::{Config, Radio, open};
+
 use crate::action::Action;
 use crate::core::chat::Chat;
 use crate::core::seed;
-use crate::radio::{self, Radio};
 use crate::tui::{events, render};
 
 pub struct Ui {
@@ -54,7 +55,7 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        let radio = radio::open(radio::Config::Loopback).expect("loopback transport is infallible");
+        let radio = open(Config::Loopback).expect("loopback transport is infallible");
         Self::new(radio, "me".into())
     }
 }

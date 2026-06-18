@@ -11,7 +11,7 @@ mod modem;
 
 use std::net::SocketAddr;
 
-use crate::radio::{Link, Radio, RadioError};
+use crate::{Link, Radio, RadioError};
 use channel::{Channel, UdpChannel};
 use modem::{Modem, ModemParams};
 

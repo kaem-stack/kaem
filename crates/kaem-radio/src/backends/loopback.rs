@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use crate::radio::{Radio, RadioError};
+use crate::{Radio, RadioError};
 
 pub struct Loopback {
     inbox: VecDeque<Vec<u8>>,
