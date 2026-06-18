@@ -745,10 +745,9 @@ dependencies = [
  "crossterm 0.29.0",
  "kaem-codec",
  "kaem-loopback",
- "kaem-sdr",
+ "kaem-radio",
  "kaem-transport",
  "kaem-udp",
- "kaem-wifi",
  "ratatui 0.30.1",
  "tui-input",
  "unicode-width 0.2.2",
@@ -766,7 +765,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kaem-sdr"
+name = "kaem-radio"
 version = "0.1.0"
 dependencies = [
  "kaem-transport",
@@ -778,13 +777,6 @@ version = "0.1.0"
 
 [[package]]
 name = "kaem-udp"
-version = "0.1.0"
-dependencies = [
- "kaem-transport",
-]
-
-[[package]]
-name = "kaem-wifi"
 version = "0.1.0"
 dependencies = [
  "kaem-transport",

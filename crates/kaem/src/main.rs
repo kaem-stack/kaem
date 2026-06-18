@@ -28,8 +28,7 @@ fn main() -> Result<()> {
 enum Backend {
     Loopback,
     Udp,
-    Wifi,
-    Sdr,
+    Radio,
 }
 
 struct Settings {
@@ -43,7 +42,7 @@ impl Settings {
     /// Resolve identity and transport from the environment so two instances can
     /// be launched side by side without rebuilding:
     ///
-    /// * `KAEM_TRANSPORT` `loopback` | `udp` | `wifi` | `sdr`  (default `sdr`)
+    /// * `KAEM_TRANSPORT` `loopback` | `udp` | `radio`  (default `radio`)
     /// * `KAEM_NODE`      `a` | `b` — presets the bind/peer ports and callsign
     /// * `KAEM_CALLSIGN`  overrides the callsign
     /// * `KAEM_BIND` / `KAEM_PEER` override the socket addresses
@@ -60,8 +59,7 @@ impl Settings {
         let backend = match std::env::var("KAEM_TRANSPORT").as_deref() {
             Ok("loopback") => Backend::Loopback,
             Ok("udp") => Backend::Udp,
-            Ok("wifi") => Backend::Wifi,
-            _ => Backend::Sdr,
+            _ => Backend::Radio,
         };
 
         Settings {
@@ -78,8 +76,7 @@ impl Settings {
         Ok(match self.backend {
             Backend::Loopback => Box::new(kaem_loopback::Loopback::new()),
             Backend::Udp => Box::new(kaem_udp::UdpTransport::bind(self.bind, self.peer)?),
-            Backend::Wifi => Box::new(kaem_wifi::WifiTransport::bind(self.bind, self.peer)?),
-            Backend::Sdr => Box::new(kaem_sdr::SdrTransport::bind(self.bind, self.peer)?),
+            Backend::Radio => Box::new(kaem_radio::RadioTransport::bind(self.bind, self.peer)?),
         })
     }
 }

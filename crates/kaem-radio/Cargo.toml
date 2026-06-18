@@ -1,5 +1,5 @@
 [package]
-name = "kaem-sdr"
+name = "kaem-radio"
 version.workspace = true
 edition.workspace = true
 

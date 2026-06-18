@@ -6,9 +6,8 @@ edition.workspace = true
 [dependencies]
 kaem-transport.workspace = true
 kaem-codec.workspace = true
-kaem-sdr.workspace = true
+kaem-radio.workspace = true
 kaem-udp.workspace = true
-kaem-wifi.workspace = true
 kaem-loopback.workspace = true
 chrono.workspace = true
 color-eyre.workspace = true

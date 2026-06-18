@@ -1,4 +1,4 @@
-//! Software-defined-radio transport.
+//! Radio transport — RF over the air, implemented as a software-defined radio.
 //!
 //! This adapter is the real radio signal path: a frame is FSK-modulated into
 //! baseband IQ samples by the [`modem`], then those samples are carried to the
@@ -16,12 +16,12 @@ use kaem_transport::{Transport, TransportError};
 use channel::{Channel, UdpChannel};
 use modem::{Modem, ModemParams};
 
-pub struct SdrTransport {
+pub struct RadioTransport {
     modem: Modem,
     channel: UdpChannel,
 }
 
-impl SdrTransport {
+impl RadioTransport {
     /// Bind locally and target `peer` for the simulated RF channel.
     pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
         Ok(Self {
@@ -37,7 +37,7 @@ impl SdrTransport {
     }
 }
 
-impl Transport for SdrTransport {
+impl Transport for RadioTransport {
     fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
         let samples = self.modem.modulate(frame);
         self.channel.transmit(&samples)
@@ -68,14 +68,14 @@ mod tests {
         "127.0.0.1:0".parse().unwrap()
     }
 
-    fn pair() -> (SdrTransport, SdrTransport) {
-        let rx = SdrTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
+    fn pair() -> (RadioTransport, RadioTransport) {
+        let rx = RadioTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
         let rx_addr = rx.local_addr().unwrap();
-        let tx = SdrTransport::bind(any_local(), rx_addr).unwrap();
+        let tx = RadioTransport::bind(any_local(), rx_addr).unwrap();
         (tx, rx)
     }
 
-    fn recv_blocking(transport: &mut SdrTransport) -> Vec<u8> {
+    fn recv_blocking(transport: &mut RadioTransport) -> Vec<u8> {
         for _ in 0..400 {
             if let Some(frame) = transport.recv().unwrap() {
                 return frame;
