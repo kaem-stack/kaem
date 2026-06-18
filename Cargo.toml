@@ -7,6 +7,7 @@ members = [
     "crates/kaem-radio",
     "crates/kaem-udp",
     "crates/kaem-loopback",
+    "crates/kaem-crypto",
 ]
 
 [workspace.package]
@@ -21,6 +22,7 @@ kaem-udp = { path = "crates/kaem-udp" }
 kaem-loopback = { path = "crates/kaem-loopback" }
 # application
 kaem-codec = { path = "crates/kaem-codec" }
+kaem-crypto = { path = "crates/kaem-crypto" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"
@@ -28,3 +30,10 @@ crossterm = "0.29.0"
 ratatui = "0.30.1"
 tui-input = "0.10"
 unicode-width = "0.2"
+# crypto
+anyhow = "1.0.102"
+chacha20poly1305 = "0.10.1"
+getrandom = "0.4.2"
+ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
+zeroize = "1"
+rand = "0.10.1"
