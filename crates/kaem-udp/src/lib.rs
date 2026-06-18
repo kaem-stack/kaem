@@ -9,26 +9,27 @@
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use crate::{Link, Radio, RadioError};
+use kaem_transport::{Transport, TransportError};
 
 /// Largest UDP payload (theoretical max for an IPv4 datagram).
 const MAX_DATAGRAM: usize = 65_507;
 
-pub struct UdpRadio {
+pub struct UdpTransport {
     socket: UdpSocket,
     peer: SocketAddr,
     buf: Vec<u8>,
 }
 
-impl UdpRadio {
-    pub fn bind(link: Link) -> Result<Self, RadioError> {
-        let socket = UdpSocket::bind(link.bind)?;
+impl UdpTransport {
+    /// Bind locally and target `peer` for outgoing frames.
+    pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
+        let socket = UdpSocket::bind(bind)?;
         socket.set_nonblocking(true)?;
         // Best-effort: lets the peer address be a broadcast address on a LAN.
         let _ = socket.set_broadcast(true);
         Ok(Self {
             socket,
-            peer: link.peer,
+            peer,
             buf: vec![0; MAX_DATAGRAM],
         })
     }
@@ -40,16 +41,16 @@ impl UdpRadio {
     }
 }
 
-impl Radio for UdpRadio {
-    fn send(&mut self, frame: &[u8]) -> Result<(), RadioError> {
+impl Transport for UdpTransport {
+    fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
         if frame.len() > MAX_DATAGRAM {
-            return Err(RadioError::FrameTooLarge(frame.len()));
+            return Err(TransportError::FrameTooLarge(frame.len()));
         }
         self.socket.send_to(frame, self.peer)?;
         Ok(())
     }
 
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, RadioError> {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         match self.socket.recv_from(&mut self.buf) {
             Ok((n, _)) => Ok(Some(self.buf[..n].to_vec())),
             Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
@@ -63,16 +64,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn loopback_link(peer: SocketAddr) -> Link {
-        Link {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            peer,
-        }
+    fn any_local() -> SocketAddr {
+        "127.0.0.1:0".parse().unwrap()
     }
 
-    fn recv_blocking(radio: &mut UdpRadio) -> Vec<u8> {
+    fn recv_blocking(transport: &mut UdpTransport) -> Vec<u8> {
         for _ in 0..200 {
-            if let Some(frame) = radio.recv().unwrap() {
+            if let Some(frame) = transport.recv().unwrap() {
                 return frame;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -83,9 +81,9 @@ mod tests {
     #[test]
     fn frame_crosses_the_link() {
         // Receiver binds first so the sender can target its real port.
-        let mut rx = UdpRadio::bind(loopback_link("127.0.0.1:9".parse().unwrap())).unwrap();
+        let mut rx = UdpTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
         let rx_addr = rx.local_addr().unwrap();
-        let mut tx = UdpRadio::bind(loopback_link(rx_addr)).unwrap();
+        let mut tx = UdpTransport::bind(any_local(), rx_addr).unwrap();
 
         let frame = b"relay node is up on channel 7";
         tx.send(frame).unwrap();
@@ -95,11 +93,11 @@ mod tests {
 
     #[test]
     fn oversized_frame_is_rejected() {
-        let mut tx = UdpRadio::bind(loopback_link("127.0.0.1:9".parse().unwrap())).unwrap();
+        let mut tx = UdpTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
         let huge = vec![0u8; MAX_DATAGRAM + 1];
         assert!(matches!(
             tx.send(&huge),
-            Err(RadioError::FrameTooLarge(_))
+            Err(TransportError::FrameTooLarge(_))
         ));
     }
 }

@@ -11,14 +11,14 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use crate::Link;
-use crate::RadioError;
-use crate::backends::sdr::modem::Iq;
+use kaem_transport::TransportError;
+
+use crate::modem::Iq;
 
 /// Carries one burst of baseband IQ samples between nodes.
 pub trait Channel {
-    fn transmit(&mut self, samples: &[Iq]) -> Result<(), RadioError>;
-    fn receive(&mut self) -> Result<Option<Vec<Iq>>, RadioError>;
+    fn transmit(&mut self, samples: &[Iq]) -> Result<(), TransportError>;
+    fn receive(&mut self) -> Result<Option<Vec<Iq>>, TransportError>;
 }
 
 const BYTES_PER_SAMPLE: usize = 8; // two little-endian f32s
@@ -41,13 +41,13 @@ pub struct UdpChannel {
 }
 
 impl UdpChannel {
-    pub fn bind(link: Link) -> Result<Self, RadioError> {
-        let socket = UdpSocket::bind(link.bind)?;
+    pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
+        let socket = UdpSocket::bind(bind)?;
         socket.set_nonblocking(true)?;
         let _ = socket.set_broadcast(true);
         Ok(Self {
             socket,
-            peer: link.peer,
+            peer,
             buf: vec![0; RECV_BUF],
             next_stream: 0,
             pending: HashMap::new(),
@@ -94,7 +94,7 @@ impl UdpChannel {
 }
 
 impl Channel for UdpChannel {
-    fn transmit(&mut self, samples: &[Iq]) -> Result<(), RadioError> {
+    fn transmit(&mut self, samples: &[Iq]) -> Result<(), TransportError> {
         let bytes = serialize(samples);
         let stream_id = self.next_stream;
         self.next_stream = self.next_stream.wrapping_add(1);
@@ -119,7 +119,7 @@ impl Channel for UdpChannel {
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Option<Vec<Iq>>, RadioError> {
+    fn receive(&mut self) -> Result<Option<Vec<Iq>>, TransportError> {
         loop {
             if let Some(burst) = self.completed.pop_front() {
                 return Ok(Some(burst));

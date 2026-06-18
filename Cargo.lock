@@ -744,7 +744,11 @@ dependencies = [
  "color-eyre",
  "crossterm 0.29.0",
  "kaem-codec",
- "kaem-radio",
+ "kaem-loopback",
+ "kaem-sdr",
+ "kaem-transport",
+ "kaem-udp",
+ "kaem-wifi",
  "ratatui 0.30.1",
  "tui-input",
  "unicode-width 0.2.2",
@@ -755,8 +759,36 @@ name = "kaem-codec"
 version = "0.1.0"
 
 [[package]]
-name = "kaem-radio"
+name = "kaem-loopback"
 version = "0.1.0"
+dependencies = [
+ "kaem-transport",
+]
+
+[[package]]
+name = "kaem-sdr"
+version = "0.1.0"
+dependencies = [
+ "kaem-transport",
+]
+
+[[package]]
+name = "kaem-transport"
+version = "0.1.0"
+
+[[package]]
+name = "kaem-udp"
+version = "0.1.0"
+dependencies = [
+ "kaem-transport",
+]
+
+[[package]]
+name = "kaem-wifi"
+version = "0.1.0"
+dependencies = [
+ "kaem-transport",
+]
 
 [[package]]
 name = "kasuari"

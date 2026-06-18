@@ -1,6 +1,7 @@
 [package]
-name = "kaem-radio"
+name = "kaem-udp"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+kaem-transport.workspace = true

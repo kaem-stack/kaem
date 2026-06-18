@@ -6,54 +6,82 @@ mod tui;
 use std::net::SocketAddr;
 
 use color_eyre::Result;
-use kaem_radio::{Config, Link, open};
+use kaem_transport::Transport;
 
 use crate::app::App;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let (config, callsign) = settings_from_env();
+    let settings = Settings::from_env();
 
-    // All connection logic lives in the radio crate; here we only choose what
-    // to open and hand the live transport to the app.
-    let radio = open(config)?;
+    // Composition root: the one place that knows the concrete transport crates
+    // and selects one. The transport port and the chat domain never see them.
+    let transport = settings.open()?;
 
     let terminal = ratatui::init();
-    let result = App::new(radio, callsign).run(terminal);
+    let result = App::new(transport, settings.callsign).run(terminal);
     ratatui::restore();
     result
 }
 
-/// Resolve the node's identity and transport from the environment so two
-/// instances can be launched side by side without rebuilding:
-///
-/// * `KAEM_RADIO`    `loopback` | `udp` | `sdr`  (default `sdr`)
-/// * `KAEM_NODE`     `a` | `b` — presets the bind/peer ports and callsign
-/// * `KAEM_CALLSIGN` overrides the callsign
-/// * `KAEM_BIND` / `KAEM_PEER` override the socket addresses
-///
-/// The defaults make node `a` (alice, 7001→7002) and node `b` (bob, 7002→7001)
-/// talk to each other on localhost.
-fn settings_from_env() -> (Config, String) {
-    let node = std::env::var("KAEM_NODE").unwrap_or_else(|_| "a".into());
-    let (default_bind, default_peer, default_callsign) = match node.as_str() {
-        "b" => ("127.0.0.1:7002", "127.0.0.1:7001", "bob"),
-        _ => ("127.0.0.1:7001", "127.0.0.1:7002", "alice"),
-    };
+/// Which transport adapter to build.
+enum Backend {
+    Loopback,
+    Udp,
+    Wifi,
+    Sdr,
+}
 
-    let callsign = std::env::var("KAEM_CALLSIGN").unwrap_or_else(|_| default_callsign.into());
-    let link = Link {
-        bind: addr_from_env("KAEM_BIND", default_bind),
-        peer: addr_from_env("KAEM_PEER", default_peer),
-    };
+struct Settings {
+    backend: Backend,
+    bind: SocketAddr,
+    peer: SocketAddr,
+    callsign: String,
+}
 
-    let config = match std::env::var("KAEM_RADIO").as_deref() {
-        Ok("loopback") => Config::Loopback,
-        Ok("udp") => Config::Udp(link),
-        _ => Config::Sdr(link),
-    };
+impl Settings {
+    /// Resolve identity and transport from the environment so two instances can
+    /// be launched side by side without rebuilding:
+    ///
+    /// * `KAEM_TRANSPORT` `loopback` | `udp` | `wifi` | `sdr`  (default `sdr`)
+    /// * `KAEM_NODE`      `a` | `b` — presets the bind/peer ports and callsign
+    /// * `KAEM_CALLSIGN`  overrides the callsign
+    /// * `KAEM_BIND` / `KAEM_PEER` override the socket addresses
+    ///
+    /// The defaults make node `a` (alice, 7001→7002) and node `b` (bob,
+    /// 7002→7001) talk to each other on localhost.
+    fn from_env() -> Self {
+        let node = std::env::var("KAEM_NODE").unwrap_or_else(|_| "a".into());
+        let (default_bind, default_peer, default_callsign) = match node.as_str() {
+            "b" => ("127.0.0.1:7002", "127.0.0.1:7001", "bob"),
+            _ => ("127.0.0.1:7001", "127.0.0.1:7002", "alice"),
+        };
 
-    (config, callsign)
+        let backend = match std::env::var("KAEM_TRANSPORT").as_deref() {
+            Ok("loopback") => Backend::Loopback,
+            Ok("udp") => Backend::Udp,
+            Ok("wifi") => Backend::Wifi,
+            _ => Backend::Sdr,
+        };
+
+        Settings {
+            backend,
+            bind: addr_from_env("KAEM_BIND", default_bind),
+            peer: addr_from_env("KAEM_PEER", default_peer),
+            callsign: std::env::var("KAEM_CALLSIGN").unwrap_or_else(|_| default_callsign.into()),
+        }
+    }
+
+    /// Build the selected transport. Adding a protocol is one arm here plus a
+    /// dependency in `Cargo.toml` — nothing else in the workspace changes.
+    fn open(&self) -> Result<Box<dyn Transport>> {
+        Ok(match self.backend {
+            Backend::Loopback => Box::new(kaem_loopback::Loopback::new()),
+            Backend::Udp => Box::new(kaem_udp::UdpTransport::bind(self.bind, self.peer)?),
+            Backend::Wifi => Box::new(kaem_wifi::WifiTransport::bind(self.bind, self.peer)?),
+            Backend::Sdr => Box::new(kaem_sdr::SdrTransport::bind(self.bind, self.peer)?),
+        })
+    }
 }
 
 fn addr_from_env(var: &str, default: &str) -> SocketAddr {

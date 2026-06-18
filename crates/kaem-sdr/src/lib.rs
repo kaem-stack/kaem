@@ -1,30 +1,32 @@
 //! Software-defined-radio transport.
 //!
-//! This backend is the real radio signal path: a frame is FSK-modulated into
+//! This adapter is the real radio signal path: a frame is FSK-modulated into
 //! baseband IQ samples by the [`modem`], then those samples are carried to the
-//! peer by a [`Channel`]. Today the channel is UDP (simulated airwaves); swap
-//! in a SoapySDR-backed channel and the same modem drives real hardware — the
-//! [`Radio`] interface above never notices.
+//! peer by a [`Channel`](channel::Channel). Today the channel is UDP (simulated
+//! airwaves); swap in a SoapySDR-backed channel and the same modem drives real
+//! hardware — the [`Transport`] interface never notices.
 
 mod channel;
 mod modem;
 
 use std::net::SocketAddr;
 
-use crate::{Link, Radio, RadioError};
+use kaem_transport::{Transport, TransportError};
+
 use channel::{Channel, UdpChannel};
 use modem::{Modem, ModemParams};
 
-pub struct SdrRadio {
+pub struct SdrTransport {
     modem: Modem,
     channel: UdpChannel,
 }
 
-impl SdrRadio {
-    pub fn bind(link: Link) -> Result<Self, RadioError> {
+impl SdrTransport {
+    /// Bind locally and target `peer` for the simulated RF channel.
+    pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
         Ok(Self {
             modem: Modem::new(ModemParams::default()),
-            channel: UdpChannel::bind(link)?,
+            channel: UdpChannel::bind(bind, peer)?,
         })
     }
 
@@ -35,13 +37,13 @@ impl SdrRadio {
     }
 }
 
-impl Radio for SdrRadio {
-    fn send(&mut self, frame: &[u8]) -> Result<(), RadioError> {
+impl Transport for SdrTransport {
+    fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
         let samples = self.modem.modulate(frame);
         self.channel.transmit(&samples)
     }
 
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, RadioError> {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         // Drain bursts until one demodulates cleanly or the channel is empty;
         // a burst that fails its CRC is dropped like real-world line noise.
         loop {
@@ -62,23 +64,20 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn link_to(peer: SocketAddr) -> Link {
-        Link {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            peer,
-        }
+    fn any_local() -> SocketAddr {
+        "127.0.0.1:0".parse().unwrap()
     }
 
-    fn pair() -> (SdrRadio, SdrRadio) {
-        let rx = SdrRadio::bind(link_to("127.0.0.1:9".parse().unwrap())).unwrap();
+    fn pair() -> (SdrTransport, SdrTransport) {
+        let rx = SdrTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
         let rx_addr = rx.local_addr().unwrap();
-        let tx = SdrRadio::bind(link_to(rx_addr)).unwrap();
+        let tx = SdrTransport::bind(any_local(), rx_addr).unwrap();
         (tx, rx)
     }
 
-    fn recv_blocking(radio: &mut SdrRadio) -> Vec<u8> {
+    fn recv_blocking(transport: &mut SdrTransport) -> Vec<u8> {
         for _ in 0..400 {
-            if let Some(frame) = radio.recv().unwrap() {
+            if let Some(frame) = transport.recv().unwrap() {
                 return frame;
             }
             std::thread::sleep(Duration::from_millis(5));

@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use crate::{Radio, RadioError};
+use kaem_transport::{Transport, TransportError};
 
 pub struct Loopback {
     inbox: VecDeque<Vec<u8>>,
@@ -20,13 +20,19 @@ impl Loopback {
     }
 }
 
-impl Radio for Loopback {
-    fn send(&mut self, frame: &[u8]) -> Result<(), RadioError> {
+impl Default for Loopback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Transport for Loopback {
+    fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
         self.inbox.push_back(frame.to_vec());
         Ok(())
     }
 
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, RadioError> {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         Ok(self.inbox.pop_front())
     }
 }

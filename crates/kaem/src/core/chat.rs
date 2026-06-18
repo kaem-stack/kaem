@@ -2,32 +2,32 @@ use chrono::Utc;
 use tui_input::Input;
 
 use kaem_codec::{WireMessage, decode, encode};
-use kaem_radio::Radio;
+use kaem_transport::Transport;
 
 use crate::core::model::{Author, Contact, Message};
 
 /// The chat domain. It owns the conversation state and drives the link: it
-/// encodes outgoing messages onto the radio and folds decoded incoming frames
-/// back into the right conversation. It depends only on the [`Radio`] trait, so
-/// the transport underneath can be anything the factory builds.
+/// encodes outgoing messages onto the transport and folds decoded incoming
+/// frames back into the right conversation. It depends only on the
+/// [`Transport`] trait, so the medium underneath can be anything the CLI wires.
 pub struct Chat {
     pub contacts: Vec<Contact>,
     pub selected: usize,
     pub input: Input,
     pub encrypted: bool,
     callsign: String,
-    radio: Box<dyn Radio>,
+    transport: Box<dyn Transport>,
 }
 
 impl Chat {
-    pub fn new(contacts: Vec<Contact>, radio: Box<dyn Radio>, callsign: String) -> Self {
+    pub fn new(contacts: Vec<Contact>, transport: Box<dyn Transport>, callsign: String) -> Self {
         Self {
             contacts,
             selected: 0,
             input: Input::default(),
             encrypted: true,
             callsign,
-            radio,
+            transport,
         }
     }
 
@@ -78,13 +78,13 @@ impl Chat {
         };
         // The message is already on screen; a transmit failure must not take the
         // UI down with it. Surfacing link errors is a job for a later status line.
-        let _ = self.radio.send(&encode(&message));
+        let _ = self.transport.send(&encode(&message));
     }
 
     /// Drain frames the radio has received and fold them into the conversation.
     /// Called once per UI tick.
     pub fn poll(&mut self) {
-        while let Ok(Some(frame)) = self.radio.recv() {
+        while let Ok(Some(frame)) = self.transport.recv() {
             let Ok(message) = decode(&frame) else {
                 continue; // not a valid kaem frame; drop it
             };

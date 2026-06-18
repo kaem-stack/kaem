@@ -1,15 +1,28 @@
 [workspace]
 resolver = "3"
-members = ["crates/kaem", "crates/kaem-codec", "crates/kaem-radio"]
+members = [
+    "crates/kaem",
+    "crates/kaem-transport",
+    "crates/kaem-codec",
+    "crates/kaem-sdr",
+    "crates/kaem-udp",
+    "crates/kaem-wifi",
+    "crates/kaem-loopback",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-# internal crates
+# the transport port + its adapters
+kaem-transport = { path = "crates/kaem-transport" }
+kaem-sdr = { path = "crates/kaem-sdr" }
+kaem-udp = { path = "crates/kaem-udp" }
+kaem-wifi = { path = "crates/kaem-wifi" }
+kaem-loopback = { path = "crates/kaem-loopback" }
+# application
 kaem-codec = { path = "crates/kaem-codec" }
-kaem-radio = { path = "crates/kaem-radio" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"

@@ -1,0 +1,7 @@
+[package]
+name = "kaem-sdr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kaem-transport.workspace = true

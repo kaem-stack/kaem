@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
 
-use kaem_radio::{Config, Radio, open};
+use kaem_transport::Transport;
 
 use crate::action::Action;
 use crate::core::chat::Chat;
@@ -19,12 +19,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(radio: Box<dyn Radio>, callsign: String) -> Self {
+    pub fn new(transport: Box<dyn Transport>, callsign: String) -> Self {
         Self {
             running: true,
             signal: 75,
             ui: Ui {
-                chat: Chat::new(seed::roster(), radio, callsign),
+                chat: Chat::new(seed::roster(), transport, callsign),
             },
         }
     }
@@ -55,7 +55,7 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        let radio = open(Config::Loopback).expect("loopback transport is infallible");
-        Self::new(radio, "me".into())
+        let transport = Box::new(kaem_loopback::Loopback::new());
+        Self::new(transport, "me".into())
     }
 }
