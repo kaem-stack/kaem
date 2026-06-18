@@ -5,4 +5,5 @@
 //! directly, so a protocol can be replaced without rippling into callers.
 
 pub mod loopback;
+pub mod sdr;
 pub mod udp;

@@ -40,6 +40,9 @@ pub enum Config {
     Loopback,
     /// Plain datagrams: frames go straight onto the wire, unmodulated.
     Udp(Link),
+    /// Software-defined radio: frames are FSK-modulated to IQ samples and
+    /// carried over the channel, the way real RF hardware would see them.
+    Sdr(Link),
 }
 
 /// Factory: establish a transport from a [`Config`].
@@ -50,6 +53,7 @@ pub fn open(config: Config) -> Result<Box<dyn Radio>, RadioError> {
     match config {
         Config::Loopback => Ok(Box::new(backends::loopback::Loopback::new())),
         Config::Udp(link) => Ok(Box::new(backends::udp::UdpRadio::bind(link)?)),
+        Config::Sdr(link) => Ok(Box::new(backends::sdr::SdrRadio::bind(link)?)),
     }
 }
 
