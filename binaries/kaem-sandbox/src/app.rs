@@ -215,7 +215,7 @@ impl SandboxApp {
             if !state.open {
                 continue;
             }
-            let node = &self.sandbox.nodes[idx].node;
+            let node = &self.sandbox.nodes[idx];
             if let Some(body) = chat::show(ctx, node, state)
                 && let Some(to) = state.selected.clone()
             {

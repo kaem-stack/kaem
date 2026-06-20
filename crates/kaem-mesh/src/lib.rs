@@ -1,19 +1,18 @@
-//! The encrypted flood-relay mesh layer: composes around [`kaem_node::Node`]
-//! to add chatroom pairing and envelope relay, without changing `Node`'s own
-//! command/frame surface (the live `kaem` TUI binary depends on that surface
-//! directly and must keep compiling unchanged).
+//! The encrypted flood-relay mesh: chatroom pairing plus a bytes-in/bytes-out
+//! relay. It knows nothing about chat — it seals and opens opaque payloads and
+//! floods envelopes across hops. A binary composes it with a chat core and a
+//! link: outgoing payloads are [`seal`](MeshNode::seal)ed here and transmitted;
+//! inbound frames go through [`on_frame`](MeshNode::on_frame), which hands back
+//! any plaintext for the chat layer to fold in and any envelope to relay.
 //!
 //! Nodes start as strangers. [`MeshNode::begin_pairing`] /
-//! [`MeshNode::finish_pairing`] mint a shared chatroom key via
-//! [`crate::pairing::handshake`]. [`MeshNode::send`] wraps a [`WireMessage`] in
-//! an [`Envelope`] sealed under the chatroom key; [`MeshNode::on_frame`]
-//! decodes any envelope it hears, decrypts and folds it in if it recognizes
-//! the chatroom, and — regardless — rebroadcasts it with a decremented TTL so
-//! traffic can cross multiple hops through nodes that can't read it at all.
+//! [`MeshNode::finish_pairing`] mint a shared chatroom key via the pairing
+//! handshake. [`MeshNode::seal`] wraps an opaque payload in an [`Envelope`]
+//! under the chatroom key; [`MeshNode::on_frame`] decodes any envelope it
+//! hears, decrypts it if it recognizes the chatroom, and — regardless — reports
+//! a decremented-TTL relay so traffic can cross nodes that can't read it.
 
 use std::collections::{HashSet, VecDeque};
-
-use kaem_node::{Contact, Node, Outbound, Time, WireMessage, decode, encode};
 
 mod crypto;
 mod envelope;
@@ -22,10 +21,10 @@ mod keys;
 mod pairing;
 mod symmetric;
 
-use crate::envelope::{Envelope, decode_envelope, encode_envelope};
-use crate::pairing::{Chatroom, Identity, Store, generate_identity, handshake};
+use envelope::{Envelope, decode_envelope, encode_envelope};
+use pairing::{Chatroom, Identity, Store, generate_identity, handshake};
 
-/// Hop budget for a freshly sent message.
+/// Hop budget for a freshly sealed message.
 const DEFAULT_TTL: u8 = 8;
 
 /// How many recently relayed message ids to remember for dedup.
@@ -64,50 +63,56 @@ impl SeenIds {
     }
 }
 
-/// A node in the encrypted mesh: a [`kaem_node::Node`] chat core, an identity
-/// keypair, and the chatroom store that turns "stranger" into "paired peer".
+/// What a node extracts from an inbound frame: the plaintext it could read (if
+/// any) and the frame it should rebroadcast (if any). The two are independent —
+/// a node relays envelopes it can't decrypt, and never relays one whose hops
+/// are spent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Inbound {
+    /// Decrypted payload, if this node holds the chatroom key and the envelope
+    /// opened cleanly. Opaque bytes — the caller decodes them.
+    pub payload: Option<Vec<u8>>,
+    /// The envelope to rebroadcast (same frame, TTL decremented), if it still
+    /// had hops left and hadn't been relayed before.
+    pub relay: Option<Vec<u8>>,
+}
+
+/// A node in the encrypted mesh: an identity keypair, the chatroom store that
+/// turns "stranger" into "paired peer", and a bounded relay-dedup set.
 pub struct MeshNode {
-    inner: Node,
     identity: Identity,
     store: Store,
     seen: SeenIds,
 }
 
 impl MeshNode {
-    pub fn new(callsign: impl Into<String>) -> Self {
+    pub fn new() -> Self {
         Self {
-            inner: Node::new(callsign),
             identity: generate_identity().expect("ml-kem-768 keygen must succeed"),
             store: Store::open_in_memory().expect("in-memory sqlite must open"),
             seen: SeenIds::new(),
         }
     }
 
+    /// This node's ML-KEM-768 public key — handed to a peer to pair against.
     pub fn public_key(&self) -> &[u8] {
         &self.identity.public_key
     }
 
-    pub fn callsign(&self) -> &str {
-        self.inner.callsign()
-    }
-
-    pub fn contacts(&self) -> &[Contact] {
-        self.inner.contacts()
-    }
-
+    /// Whether this node holds a chatroom shared with `peer`.
     pub fn is_paired_with(&self, peer: &str) -> bool {
         self.store.find_by_peer(peer).is_some()
     }
 
-    /// Callsigns of every peer this node has paired with — the contact list.
+    /// Callsigns of every peer this node has paired with.
     pub fn paired_peers(&self) -> Vec<String> {
         self.store.list().into_iter().map(|c| c.peer).collect()
     }
 
     /// Mint a new chatroom for pairing with `peer` (identified here by its
     /// public key), insert it into this node's own store under `peer`'s
-    /// callsign, and return the bytes sealed for the peer to recover the
-    /// same chatroom via [`finish_pairing`].
+    /// callsign, and return the bytes sealed for the peer to recover the same
+    /// chatroom via [`finish_pairing`](Self::finish_pairing).
     pub fn begin_pairing(&mut self, peer: &str, peer_pubkey: &[u8]) -> anyhow::Result<Vec<u8>> {
         let (chatroom_id, key, sealed) = handshake::pair(&self.identity, peer_pubkey)?;
         self.store.insert(&Chatroom {
@@ -118,9 +123,9 @@ impl MeshNode {
         Ok(sealed)
     }
 
-    /// Recover the chatroom minted by a peer's [`begin_pairing`] call and
-    /// insert it into this node's store under `peer`'s callsign, completing
-    /// the pairing.
+    /// Recover the chatroom minted by a peer's
+    /// [`begin_pairing`](Self::begin_pairing) call and insert it under `peer`'s
+    /// callsign, completing the pairing.
     pub fn finish_pairing(&mut self, peer: &str, sealed: &[u8]) -> anyhow::Result<()> {
         let (chatroom_id, key) = handshake::accept(&self.identity, sealed)?;
         self.store.insert(&Chatroom {
@@ -131,76 +136,58 @@ impl MeshNode {
         Ok(())
     }
 
-    /// Seal `body` for `to` under their shared chatroom key and return the
-    /// envelope to transmit. A no-op (empty result) if `to` isn't paired.
-    pub fn send(&mut self, to: &str, body: String, now: Time) -> Vec<Outbound> {
-        let Some(chatroom) = self.store.find_by_peer(to) else {
-            return Vec::new(); // unpaired — nothing we can encrypt this under
-        };
-
-        let message = WireMessage {
-            from: self.callsign().to_string(),
-            to: to.to_string(),
-            body: body.clone(),
-        };
-        let plaintext = encode(&message);
-        let ciphertext = crate::symmetric::seal(&chatroom.key, &plaintext);
-
+    /// Seal an opaque `payload` for paired `peer` into a relayable envelope
+    /// frame. `None` if `peer` isn't paired — there's no key to seal under.
+    pub fn seal(&self, to: &str, payload: &[u8]) -> Option<Vec<u8>> {
+        let chatroom = self.store.find_by_peer(to)?;
         let envelope = Envelope {
             chatroom_id: chatroom.id,
             message_id: rand::random(),
             ttl: DEFAULT_TTL,
-            ciphertext,
+            ciphertext: symmetric::seal(&chatroom.key, payload),
         };
-
-        self.inner.record_sent(to, body, now);
-
-        vec![Outbound(encode_envelope(&envelope))]
+        Some(encode_envelope(&envelope))
     }
 
-    /// Fold an incoming envelope into this node's state if it's addressed to
-    /// a chatroom this node recognizes, and — regardless of whether it could
-    /// be read — relay it onward with a decremented TTL, as long as hops
-    /// remain and it hasn't already been relayed.
-    pub fn on_frame(&mut self, frame: &[u8], now: Time) -> Vec<Outbound> {
+    /// Process an inbound frame: decrypt it if it's addressed to a chatroom we
+    /// hold, and report a decremented-TTL relay if it still has hops and we
+    /// haven't relayed it before. A frame we've already seen — or that isn't a
+    /// valid envelope — yields an empty [`Inbound`].
+    pub fn on_frame(&mut self, frame: &[u8]) -> Inbound {
         let Ok(envelope) = decode_envelope(frame) else {
-            return Vec::new(); // not a valid envelope frame; drop it
+            return Inbound::default(); // not a valid envelope frame; drop it
         };
-
         if self.seen.contains(envelope.message_id) {
-            return Vec::new(); // already relayed this one; stop the flood
+            return Inbound::default(); // already relayed this one; stop the flood
         }
         self.seen.record(envelope.message_id);
 
-        self.try_decrypt_and_fold(&envelope, now);
+        let payload = self.try_open(&envelope);
 
-        if envelope.ttl == 0 {
-            return Vec::new();
-        }
+        // Relay regardless of whether we could read it, as long as hops remain.
+        let relay = (envelope.ttl > 0).then(|| {
+            encode_envelope(&Envelope {
+                chatroom_id: envelope.chatroom_id,
+                message_id: envelope.message_id,
+                ttl: envelope.ttl - 1,
+                ciphertext: envelope.ciphertext,
+            })
+        });
 
-        let relayed = Envelope {
-            chatroom_id: envelope.chatroom_id,
-            message_id: envelope.message_id,
-            ttl: envelope.ttl - 1,
-            ciphertext: envelope.ciphertext,
-        };
-        vec![Outbound(encode_envelope(&relayed))]
+        Inbound { payload, relay }
     }
 
-    fn try_decrypt_and_fold(&mut self, envelope: &Envelope, now: Time) {
-        let Some(chatroom) = self.store.lookup(envelope.chatroom_id) else {
-            return; // not our chatroom — can't read it, nothing to fold
-        };
-        let Ok(plaintext) = crate::symmetric::open(&chatroom.key, &envelope.ciphertext) else {
-            return; // wrong key or corrupted — drop silently
-        };
-        let Ok(message) = decode(&plaintext) else {
-            return; // not a valid WireMessage inside — drop silently
-        };
-        if message.from == self.callsign() {
-            return; // ignore our own message echoed back
-        }
-        self.inner.record_received(message.from, message.body, now);
+    /// Decrypt an envelope addressed to a chatroom we hold; `None` if it isn't
+    /// ours or the ciphertext doesn't open under our key.
+    fn try_open(&self, envelope: &Envelope) -> Option<Vec<u8>> {
+        let chatroom = self.store.lookup(envelope.chatroom_id)?;
+        symmetric::open(&chatroom.key, &envelope.ciphertext).ok()
+    }
+}
+
+impl Default for MeshNode {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -208,118 +195,91 @@ impl MeshNode {
 mod tests {
     use super::*;
 
-    fn pair(a: &mut MeshNode, b: &mut MeshNode) {
-        let a_name = a.callsign().to_string();
-        let b_name = b.callsign().to_string();
+    fn pair(a: &mut MeshNode, a_name: &str, b: &mut MeshNode, b_name: &str) {
         let b_pubkey = b.public_key().to_vec();
-
-        let sealed = a
-            .begin_pairing(&b_name, &b_pubkey)
-            .expect("alice mints the chatroom");
-        b.finish_pairing(&a_name, &sealed).expect("bob accepts");
+        let sealed = a.begin_pairing(b_name, &b_pubkey).expect("mint chatroom");
+        b.finish_pairing(a_name, &sealed).expect("accept chatroom");
     }
 
     #[test]
-    fn unpaired_send_is_a_no_op() {
-        let mut alice = MeshNode::new("alice");
-        let outbound = alice.send("charlie", "hi".to_string(), 0);
-        assert!(outbound.is_empty());
+    fn unpaired_seal_yields_nothing() {
+        let alice = MeshNode::new();
+        assert!(alice.seal("charlie", b"hi").is_none());
     }
 
     #[test]
     fn pairing_is_mutual() {
-        let mut alice = MeshNode::new("alice");
-        let mut charlie = MeshNode::new("charlie");
-        pair(&mut alice, &mut charlie);
+        let mut alice = MeshNode::new();
+        let mut charlie = MeshNode::new();
+        pair(&mut alice, "alice", &mut charlie, "charlie");
 
         assert!(alice.is_paired_with("charlie"));
         assert!(charlie.is_paired_with("alice"));
+        assert_eq!(charlie.paired_peers(), vec!["alice".to_string()]);
     }
 
     #[test]
-    fn alice_to_charlie_via_bob_relay_scenario() {
-        let mut alice = MeshNode::new("alice");
-        let mut bob = MeshNode::new("bob"); // never paired with anyone
-        let mut charlie = MeshNode::new("charlie");
+    fn paired_peer_opens_what_we_seal() {
+        let mut alice = MeshNode::new();
+        let mut charlie = MeshNode::new();
+        pair(&mut alice, "alice", &mut charlie, "charlie");
 
-        pair(&mut alice, &mut charlie);
+        let frame = alice
+            .seal("charlie", b"meet at the repeater")
+            .expect("paired");
+        let inbound = charlie.on_frame(&frame);
+        assert_eq!(
+            inbound.payload.as_deref(),
+            Some(&b"meet at the repeater"[..])
+        );
+    }
 
-        // alice -> charlie, but bob is the only one in range, so the frame
-        // physically goes to bob first.
-        let outbound = alice.send("charlie", "hi".to_string(), 0);
-        assert_eq!(outbound.len(), 1);
-        let envelope_from_alice = &outbound[0].0;
+    #[test]
+    fn relays_through_a_node_that_cannot_read_it() {
+        let mut alice = MeshNode::new();
+        let mut bob = MeshNode::new(); // never paired with anyone
+        let mut charlie = MeshNode::new();
+        pair(&mut alice, "alice", &mut charlie, "charlie");
 
-        // bob can't decrypt it (never paired), but still relays it with ttl-1.
-        let relayed_by_bob = bob.on_frame(envelope_from_alice, 1);
-        assert_eq!(relayed_by_bob.len(), 1);
-        assert!(bob.contacts().is_empty());
+        // alice -> charlie, but bob is the only one in range first.
+        let from_alice = alice.seal("charlie", b"hi").expect("paired");
+        let original = decode_envelope(&from_alice).unwrap();
 
-        let decoded = decode_envelope(&relayed_by_bob[0].0).expect("valid envelope");
-        let original = decode_envelope(envelope_from_alice).expect("valid envelope");
-        assert_eq!(decoded.ttl, original.ttl - 1);
+        // bob can't decrypt it, but still relays it with ttl-1.
+        let at_bob = bob.on_frame(&from_alice);
+        assert!(at_bob.payload.is_none());
+        let relay = at_bob.relay.expect("bob relays onward");
+        assert_eq!(decode_envelope(&relay).unwrap().ttl, original.ttl - 1);
 
-        // charlie hears bob's relay, decrypts it, and folds "hi" in.
-        let from_charlie = charlie.on_frame(&relayed_by_bob[0].0, 2);
-        let contact = charlie
-            .contacts()
-            .iter()
-            .find(|c| c.name == "alice")
-            .expect("alice contact created");
-        assert_eq!(contact.history.last().unwrap().body, "hi");
-
-        // DEFAULT_TTL is 8: alice sends ttl=8, bob relays ttl=7, so charlie's
-        // copy still has hops left and charlie itself relays it onward.
-        assert_eq!(decoded.ttl, 7);
-        assert_eq!(from_charlie.len(), 1);
+        // charlie hears bob's relay and opens it.
+        let at_charlie = charlie.on_frame(&relay);
+        assert_eq!(at_charlie.payload.as_deref(), Some(&b"hi"[..]));
     }
 
     #[test]
     fn duplicate_envelope_is_relayed_only_once() {
-        let mut bob = MeshNode::new("bob");
-        let envelope = Envelope {
+        let mut bob = MeshNode::new();
+        let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 42,
             ttl: 3,
             ciphertext: b"opaque".to_vec(),
-        };
-        let frame = encode_envelope(&envelope);
+        });
 
-        let first = bob.on_frame(&frame, 0);
-        assert_eq!(first.len(), 1);
-
-        let second = bob.on_frame(&frame, 1);
-        assert!(second.is_empty());
+        assert!(bob.on_frame(&frame).relay.is_some());
+        assert!(bob.on_frame(&frame).relay.is_none());
     }
 
     #[test]
     fn zero_ttl_envelope_is_not_relayed() {
-        let mut bob = MeshNode::new("bob");
-        let envelope = Envelope {
+        let mut bob = MeshNode::new();
+        let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 7,
             ttl: 0,
             ciphertext: b"opaque".to_vec(),
-        };
-        let frame = encode_envelope(&envelope);
+        });
 
-        let outbound = bob.on_frame(&frame, 0);
-        assert!(outbound.is_empty());
-    }
-
-    #[test]
-    fn send_records_own_history_immediately() {
-        let mut alice = MeshNode::new("alice");
-        let mut charlie = MeshNode::new("charlie");
-        pair(&mut alice, &mut charlie);
-
-        alice.send("charlie", "hello".to_string(), 0);
-
-        let contact = alice
-            .contacts()
-            .iter()
-            .find(|c| c.name == "charlie")
-            .expect("charlie contact created by send");
-        assert_eq!(contact.history.last().unwrap().body, "hello");
+        assert!(bob.on_frame(&frame).relay.is_none());
     }
 }

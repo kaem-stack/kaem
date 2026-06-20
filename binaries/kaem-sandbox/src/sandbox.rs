@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use kaem_link::{Medium, NodeId, Pos, RadioTransport, SimChannel, Transport};
 use kaem_mesh::MeshNode;
+use kaem_node::{Command, Node};
 
 use crate::field::FIELD;
 
@@ -22,15 +23,20 @@ const NAMES: &[&str] = &[
     "alice", "bob", "carol", "dave", "erin", "frank", "grace", "heidi",
 ];
 
-/// One simulated node: its domain core, its radio transport over the shared
-/// medium, and where it sits in the field.
+/// One simulated node: its chat core, its encrypted-mesh layer, its radio
+/// transport over the shared medium, and where it sits in the field. The binary
+/// is the composition root that wires the (chat-agnostic) mesh to the
+/// (crypto-agnostic) chat core — neither crate depends on the other.
 pub struct SimNode {
     pub name: String,
     /// The node's handle in the shared [`Medium`] — needed to call
     /// `Medium::set_position` when the operator drags it on the canvas.
     pub id: NodeId,
     pub pos: Pos,
-    pub node: MeshNode,
+    /// Plaintext chat: contact list + history.
+    pub chat: Node,
+    /// Encrypted mesh: identity, pairing, and the seal/open + flood relay.
+    pub mesh: MeshNode,
     pub transport: RadioTransport,
 }
 
@@ -96,13 +102,14 @@ impl Sandbox {
             .unwrap_or_else(|| format!("n{}", self.nodes.len()));
 
         let transport = RadioTransport::new(Box::new(SimChannel::new(id, self.medium.clone())));
-        let node = MeshNode::new(name.clone());
+        let chat = Node::new(name.clone());
 
         self.nodes.push(SimNode {
             name,
             id,
             pos,
-            node,
+            chat,
+            mesh: MeshNode::new(),
             transport,
         });
         self.nodes.len() - 1
@@ -130,12 +137,20 @@ impl Sandbox {
         self.clock += self.dt;
 
         for node in &mut self.nodes {
-            let mut relayed = Vec::new();
+            let mut relays = Vec::new();
             while let Ok(Some(frame)) = node.transport.recv() {
-                relayed.extend(node.node.on_frame(&frame, self.clock));
+                let inbound = node.mesh.on_frame(&frame);
+                // Decrypted payload (if any) folds into this node's chat
+                // history; the relay (if any) is rebroadcast below.
+                if let Some(payload) = inbound.payload {
+                    node.chat.on_frame(&payload, self.clock);
+                }
+                if let Some(relay) = inbound.relay {
+                    relays.push(relay);
+                }
             }
-            for out in relayed {
-                let _ = node.transport.send(&out.0);
+            for relay in relays {
+                let _ = node.transport.send(&relay);
                 self.pulses.push(Pulse {
                     origin: node.pos,
                     start: self.clock,
@@ -156,21 +171,34 @@ impl Sandbox {
     /// line. Delivery to receivers still happens on the next `step` — that's
     /// the deterministic-sim semantics.
     pub fn send_from(&mut self, idx: usize, to: &str, body: String) -> bool {
+        let now = self.clock;
         let Some(node) = self.nodes.get_mut(idx) else {
             return false;
         };
-        let outbound = node.node.send(to, body, self.clock);
-        if outbound.is_empty() {
-            return false; // unpaired with `to`
+        if !node.mesh.is_paired_with(to) {
+            return false; // unpaired with `to` — nothing to seal under
         }
-        for out in outbound {
-            let _ = node.transport.send(&out.0);
-            self.pulses.push(Pulse {
-                origin: node.pos,
-                start: self.clock,
-            });
+        // Record + encode the chat frame, then seal each for the chatroom and
+        // hand the resulting envelope to the link.
+        let frames = node.chat.command(
+            Command::Send {
+                to: to.to_string(),
+                body,
+            },
+            now,
+        );
+        let mut transmitted = false;
+        for frame in frames {
+            if let Some(envelope) = node.mesh.seal(to, &frame.0) {
+                let _ = node.transport.send(&envelope);
+                self.pulses.push(Pulse {
+                    origin: node.pos,
+                    start: now,
+                });
+                transmitted = true;
+            }
         }
-        true
+        transmitted
     }
 
     /// Pair the nodes at `a_idx` and `b_idx`: exchange identity public keys
@@ -187,21 +215,21 @@ impl Sandbox {
         let Some(b_name) = self.nodes.get(b_idx).map(|n| n.name.clone()) else {
             return;
         };
-        let Some(b_pubkey) = self.nodes.get(b_idx).map(|n| n.node.public_key().to_vec()) else {
+        let Some(b_pubkey) = self.nodes.get(b_idx).map(|n| n.mesh.public_key().to_vec()) else {
             return;
         };
 
         let Some(a) = self.nodes.get_mut(a_idx) else {
             return;
         };
-        let Ok(sealed) = a.node.begin_pairing(&b_name, &b_pubkey) else {
+        let Ok(sealed) = a.mesh.begin_pairing(&b_name, &b_pubkey) else {
             return;
         };
 
         let Some(b) = self.nodes.get_mut(b_idx) else {
             return;
         };
-        let _ = b.node.finish_pairing(&a_name, &sealed);
+        let _ = b.mesh.finish_pairing(&a_name, &sealed);
     }
 
     pub fn toggle_running(&mut self) {
@@ -256,14 +284,14 @@ mod tests {
             sandbox.step();
         }
 
-        let close_node = &sandbox.nodes[close_peer].node;
+        let close_node = &sandbox.nodes[close_peer].chat;
         let heard = close_node
             .contacts()
             .iter()
             .any(|c| c.name == sender_name && c.history.iter().any(|m| m.body == "hi all"));
         assert!(heard, "in-range node should have received the message");
 
-        let far_node = &sandbox.nodes[far_away].node;
+        let far_node = &sandbox.nodes[far_away].chat;
         let missed = far_node.contacts().iter().all(|c| c.name != sender_name);
         assert!(missed, "out-of-range node should not have received it");
     }
@@ -287,7 +315,7 @@ mod tests {
 
         assert!(sandbox.send_from(idx, &peer_name, "hello".to_string()));
 
-        let contact = &sandbox.nodes[idx].node.contacts()[0];
+        let contact = &sandbox.nodes[idx].chat.contacts()[0];
         assert_eq!(contact.history.last().unwrap().body, "hello");
     }
 

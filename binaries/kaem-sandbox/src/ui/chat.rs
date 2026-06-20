@@ -8,9 +8,9 @@
 
 use egui::{Context, RichText, ScrollArea, TextEdit};
 
-use kaem_mesh::MeshNode;
 use kaem_node::Author;
 
+use crate::sandbox::SimNode;
 use crate::theme;
 
 /// Per-node UI state that doesn't belong in the engine: whether the window
@@ -26,7 +26,7 @@ pub struct ChatState {
 /// Draw `node`'s chat window if `state.open`. Returns the message body to
 /// send to the selected contact, if the user submitted one this frame
 /// (Enter or the Send button).
-pub fn show(ctx: &Context, node: &MeshNode, state: &mut ChatState) -> Option<String> {
+pub fn show(ctx: &Context, node: &SimNode, state: &mut ChatState) -> Option<String> {
     if !state.open {
         return None;
     }
@@ -34,7 +34,7 @@ pub fn show(ctx: &Context, node: &MeshNode, state: &mut ChatState) -> Option<Str
     let mut open = state.open;
     let mut submitted = None;
 
-    egui::Window::new(node.callsign())
+    egui::Window::new(node.name.as_str())
         .open(&mut open)
         .resizable(true)
         .default_width(420.0)
@@ -56,11 +56,11 @@ pub fn show(ctx: &Context, node: &MeshNode, state: &mut ChatState) -> Option<Str
     submitted
 }
 
-fn render_contacts(ui: &mut egui::Ui, node: &MeshNode, state: &mut ChatState) {
+fn render_contacts(ui: &mut egui::Ui, node: &SimNode, state: &mut ChatState) {
     ui.label(RichText::new("contacts").color(theme::META));
     ui.separator();
 
-    let mut peers = node.paired_peers();
+    let mut peers = node.mesh.paired_peers();
     peers.sort();
 
     if peers.is_empty() {
@@ -76,11 +76,7 @@ fn render_contacts(ui: &mut egui::Ui, node: &MeshNode, state: &mut ChatState) {
     }
 }
 
-fn render_conversation(
-    ui: &mut egui::Ui,
-    node: &MeshNode,
-    state: &mut ChatState,
-) -> Option<String> {
+fn render_conversation(ui: &mut egui::Ui, node: &SimNode, state: &mut ChatState) -> Option<String> {
     let Some(selected) = state.selected.clone() else {
         ui.label(RichText::new("select a contact").color(theme::META));
         return None;
@@ -91,8 +87,9 @@ fn render_conversation(
     render_input(ui, state)
 }
 
-fn render_log(ui: &mut egui::Ui, node: &MeshNode, selected: &str) {
+fn render_log(ui: &mut egui::Ui, node: &SimNode, selected: &str) {
     let history = node
+        .chat
         .contacts()
         .iter()
         .find(|c| c.name == selected)
