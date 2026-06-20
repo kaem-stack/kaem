@@ -17,7 +17,6 @@ pub const HIT_THRESHOLD: f32 = 6.0;
 
 const NODE_RADIUS: f32 = 5.0;
 const CURSOR_RADIUS: f32 = 3.0;
-const RANGE_FILL_ALPHA: u8 = 14;
 const RANGE_STROKE_ALPHA: u8 = 50;
 
 /// A labeled node drawn on the canvas.
@@ -105,11 +104,6 @@ impl Canvas<'_> {
         let screen_radius = field_radius_to_screen(inner, range);
         for node in self.nodes {
             let center = field_to_screen(inner, node.pos);
-            painter.circle_filled(
-                center,
-                screen_radius,
-                theme::with_alpha(theme::ME, RANGE_FILL_ALPHA),
-            );
             painter.circle_stroke(
                 center,
                 screen_radius,
