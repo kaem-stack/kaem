@@ -1,5 +1,13 @@
 # kaem sandbox — plan
 
+> **Historical note.** This plan landed. The per-layer crate layout it sketches
+> below (`kaem-transport`, `kaem-radio`, `kaem-sim`, `kaem-codec`,
+> `kaem-crypto`, `kaem-pairing`, …) has since been consolidated into three
+> self-contained, mutually-independent crates — `kaem-link`, `kaem-node`,
+> `kaem-mesh` — so each can later become its own binary. See `CLAUDE.md`
+> (Architecture) for the current layout; read the crate names below as the
+> design phases they were, not the present tree.
+
 A Packet Tracer-style sandbox for the kaem mesh-radio stack. You spawn nodes in a
 simulated RF space, position them, pair them (key exchange), and drive each one
 from a Cisco-IOS-style console. The protocol logic lives in library crates; the
