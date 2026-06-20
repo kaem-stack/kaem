@@ -2322,18 +2322,18 @@ dependencies = [
 [[package]]
 name = "kaem-link"
 version = "0.1.0"
-dependencies = [
- "rand 0.10.1",
-]
 
 [[package]]
 name = "kaem-mesh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "kaem-crypto",
+ "chacha20poly1305",
+ "getrandom 0.4.3",
+ "ml-kem",
  "rand 0.10.1",
  "rusqlite",
+ "zeroize",
 ]
 
 [[package]]
@@ -2351,6 +2351,14 @@ dependencies = [
  "kaem-link",
  "kaem-mesh",
  "kaem-node",
+ "kaem-sim",
+ "rand 0.10.1",
+]
+
+[[package]]
+name = "kaem-sim"
+version = "0.1.0"
+dependencies = [
  "rand 0.10.1",
 ]
 
