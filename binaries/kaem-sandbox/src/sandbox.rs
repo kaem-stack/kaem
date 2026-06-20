@@ -463,7 +463,10 @@ mod tests {
         let close_peer_name = sandbox.nodes[close_peer].name.clone();
         assert!(sandbox.send_from(near, &close_peer_name, "hi all".to_string()));
 
-        for _ in 0..5 {
+        // Step well past the propagation delay for distance 10 at the
+        // configured WAVE_SPEED, whatever that currently is.
+        let ticks = (10.0 / crate::field::WAVE_SPEED) as u64 / DT + 2;
+        for _ in 0..ticks {
             sandbox.step();
         }
 
@@ -481,8 +484,8 @@ mod tests {
 
     #[test]
     fn relay_does_not_fire_before_the_packet_actually_arrives() {
-        // distance 10, WAVE_SPEED units/ms -> 200ms travel time = 4 ticks at
-        // DT=50ms. A relaying node must not retransmit (or the receiver hear
+        // distance 10 at the configured WAVE_SPEED takes `delay_ms` to
+        // travel. A relaying node must not retransmit (or the receiver hear
         // anything) before that delay has actually elapsed.
         let mut sandbox = empty();
         let near = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
@@ -491,7 +494,14 @@ mod tests {
         let close_peer_name = sandbox.nodes[close_peer].name.clone();
         sandbox.send_from(near, &close_peer_name, "hi".to_string());
 
-        for _ in 0..3 {
+        let delay_ms = (10.0 / crate::field::WAVE_SPEED) as u64;
+        // Largest tick count that still lands strictly before `delay_ms`.
+        let ticks_before_arrival = delay_ms.saturating_sub(1) / DT;
+        assert!(
+            ticks_before_arrival >= 1,
+            "test assumes the delay spans at least one tick"
+        );
+        for _ in 0..ticks_before_arrival {
             sandbox.step();
         }
         assert!(
@@ -501,10 +511,12 @@ mod tests {
                     .contacts()
                     .iter()
                     .all(|c| c.history.is_empty()),
-            "packet should still be in flight at t=150ms, not yet delivered"
+            "packet should still be in flight, not yet delivered"
         );
 
-        sandbox.step(); // t=200ms: the packet has now arrived
+        // One more tick crosses delay_ms (ticks_before_arrival * DT < delay_ms
+        // <= (ticks_before_arrival + 1) * DT).
+        sandbox.step();
         let heard = sandbox.nodes[close_peer]
             .chat
             .contacts()
@@ -547,7 +559,8 @@ mod tests {
         sandbox.send_from(idx, &peer_name, "hi".to_string());
         assert_eq!(sandbox.nodes[idx].stats.sent, 1);
 
-        for _ in 0..5 {
+        let ticks = (10.0 / crate::field::WAVE_SPEED) as u64 / DT + 2;
+        for _ in 0..ticks {
             sandbox.step();
         }
         assert_eq!(sandbox.nodes[peer].stats.received, 1);

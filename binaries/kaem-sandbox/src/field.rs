@@ -20,8 +20,10 @@ use kaem_sim::Pos;
 pub const FIELD: f32 = 100.0;
 
 /// How many field units one wave pulse advances per virtual millisecond. At
-/// `range = 35.0` this crosses the full range in ~0.7s of virtual time.
-pub const WAVE_SPEED: f32 = 0.05;
+/// `range = 35.0` this crosses the full range in ~2.8s of virtual time —
+/// slow enough to actually watch a hop travel, rather than a near-instant
+/// blip.
+pub const WAVE_SPEED: f32 = 0.0125;
 
 /// The single field-units-to-pixels scale for `inner`, plus the top-left
 /// offset of the centered, letterboxed field square within it.
