@@ -1,0 +1,10 @@
+[package]
+name = "kaem-pairing"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kaem-crypto.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+rusqlite.workspace = true

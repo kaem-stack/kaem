@@ -1,0 +1,85 @@
+//! The pairing handshake: mint a chatroom (id + symmetric key) and seal it
+//! for a specific peer's identity, using a real ML-KEM-768 encapsulation via
+//! [`kaem_crypto::crypto`]. Whoever holds the matching secret key is the only
+//! one who can recover the chatroom id and key from the sealed bytes.
+
+use anyhow::{Result, anyhow};
+use kaem_crypto::crypto::{self, EncryptConfig};
+
+use crate::identity::Identity;
+
+/// 8 bytes of chatroom id + 32 bytes of chatroom key.
+const PLAINTEXT_LEN: usize = 8 + 32;
+
+/// Mint a new chatroom for pairing with whoever holds `peer_pubkey`'s
+/// matching secret key. Returns `(chatroom_id, key, sealed_for_peer)` — the
+/// caller inserts `(chatroom_id, key)` into its own [`crate::Store`]
+/// immediately, and hands `sealed_for_peer` to the peer to recover the same
+/// pair via [`accept`].
+pub fn pair(local_identity: &Identity, peer_pubkey: &[u8]) -> Result<(u64, [u8; 32], Vec<u8>)> {
+    let _ = local_identity; // pairing only needs the peer's public key to seal
+
+    let chatroom_id: u64 = rand::random();
+    let mut key = [0u8; 32];
+    rand::fill(&mut key);
+
+    let mut plaintext = Vec::with_capacity(PLAINTEXT_LEN);
+    plaintext.extend_from_slice(&chatroom_id.to_be_bytes());
+    plaintext.extend_from_slice(&key);
+
+    let cfg = EncryptConfig::default();
+    let sealed = crypto::encrypt(&cfg, peer_pubkey, &plaintext)?;
+
+    Ok((chatroom_id, key, sealed.ciphertext))
+}
+
+/// Recover the `(chatroom_id, key)` pair sealed by [`pair`], using
+/// `local_identity`'s secret key.
+pub fn accept(local_identity: &Identity, sealed: &[u8]) -> Result<(u64, [u8; 32])> {
+    let cfg = EncryptConfig::default();
+    let opened = crypto::decrypt(&cfg, &local_identity.secret_key, sealed)?;
+
+    if opened.plaintext.len() != PLAINTEXT_LEN {
+        return Err(anyhow!(
+            "unexpected pairing payload length: {} (expected {PLAINTEXT_LEN})",
+            opened.plaintext.len()
+        ));
+    }
+
+    let (id_bytes, key_bytes) = opened.plaintext.split_at(8);
+    let chatroom_id = u64::from_be_bytes(id_bytes.try_into().expect("split at 8"));
+    let key: [u8; 32] = key_bytes.try_into().expect("split leaves 32 bytes");
+
+    Ok((chatroom_id, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::generate_identity;
+
+    #[test]
+    fn pair_and_accept_agree_on_chatroom_id_and_key() {
+        let alice = generate_identity().expect("alice identity");
+        let bob = generate_identity().expect("bob identity");
+
+        let (chatroom_id, key, sealed) =
+            pair(&alice, &bob.public_key).expect("alice mints the chatroom");
+
+        let (accepted_id, accepted_key) = accept(&bob, &sealed).expect("bob accepts");
+
+        assert_eq!(chatroom_id, accepted_id);
+        assert_eq!(key, accepted_key);
+    }
+
+    #[test]
+    fn wrong_identity_cannot_accept() {
+        let alice = generate_identity().expect("alice identity");
+        let bob = generate_identity().expect("bob identity");
+        let mallory = generate_identity().expect("mallory identity");
+
+        let (_, _, sealed) = pair(&alice, &bob.public_key).expect("alice mints the chatroom");
+
+        assert!(accept(&mallory, &sealed).is_err());
+    }
+}
