@@ -8,10 +8,10 @@
 //! wall clock or a deterministic simulation tick.
 
 mod model;
+mod wire;
 
 pub use model::{Author, Contact, Message};
-
-use kaem_codec::{WireMessage, decode, encode};
+pub use wire::{CodecError, WireMessage, decode, encode};
 
 /// Virtual milliseconds. Callers decide what clock feeds this — a live wall
 /// clock for the TUI binary, a stepped counter for a simulation.
