@@ -9,6 +9,7 @@ kaem-node.workspace = true
 kaem-mesh.workspace = true
 kaem-link.workspace = true
 kaem-radio-pipeline.workspace = true
+kaem-channel.workspace = true
 kaem-sim.workspace = true
 kaem-crypto.workspace = true
 eframe.workspace = true

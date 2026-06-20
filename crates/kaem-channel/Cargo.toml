@@ -1,0 +1,6 @@
+[package]
+name = "kaem-channel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

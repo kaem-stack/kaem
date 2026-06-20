@@ -1,23 +1,63 @@
-//! The RF front-end the modem hands samples to.
+//! The RF front-end a modem hands samples to.
 //!
 //! [`Channel`] is the seam between digital signal processing and the radio
 //! hardware. A real SDR — HackRF, PlutoSDR, USRP via SoapySDR — would implement
 //! it by streaming IQ to/from the device. [`UdpChannel`] implements it over UDP
 //! so two nodes exchange the very same baseband samples without any hardware,
 //! which is how the link is simulated.
+//!
+//! This crate carries its own [`Iq`] type rather than depending on
+//! `kaem-modem`'s — the same convention `kaem-sim` already follows — so it
+//! stays a pure capability crate with zero `kaem-*` dependencies. An
+//! orchestrator binary converts between the two `Iq` types at the boundary (a
+//! trivial copy of two `f32` fields).
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use crate::modem::Iq;
-use crate::transport::TransportError;
+/// One complex baseband sample. Mirrors `kaem-modem`'s `Iq` field-for-field;
+/// an orchestrator converts between the two at the boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Iq {
+    pub i: f32,
+    pub q: f32,
+}
+
+/// Errors raised by a channel.
+#[derive(Debug)]
+pub enum ChannelError {
+    /// Underlying I/O failure (socket bind, send, receive).
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for ChannelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChannelError::Io(e) => write!(f, "channel io error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ChannelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ChannelError::Io(e) => Some(e),
+        }
+    }
+}
+
+impl From<std::io::Error> for ChannelError {
+    fn from(e: std::io::Error) -> Self {
+        ChannelError::Io(e)
+    }
+}
 
 /// Carries one burst of baseband IQ samples between nodes.
 pub trait Channel {
-    fn transmit(&mut self, samples: &[Iq]) -> Result<(), TransportError>;
-    fn receive(&mut self) -> Result<Option<Vec<Iq>>, TransportError>;
+    fn transmit(&mut self, samples: &[Iq]) -> Result<(), ChannelError>;
+    fn receive(&mut self) -> Result<Option<Vec<Iq>>, ChannelError>;
 
     /// The address actually bound, if this channel has one (e.g. UDP). A
     /// channel without a network address — like the in-process sim — inherits
@@ -47,7 +87,7 @@ pub struct UdpChannel {
 }
 
 impl UdpChannel {
-    pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
+    pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, ChannelError> {
         let socket = UdpSocket::bind(bind)?;
         socket.set_nonblocking(true)?;
         let _ = socket.set_broadcast(true);
@@ -97,7 +137,7 @@ impl UdpChannel {
 }
 
 impl Channel for UdpChannel {
-    fn transmit(&mut self, samples: &[Iq]) -> Result<(), TransportError> {
+    fn transmit(&mut self, samples: &[Iq]) -> Result<(), ChannelError> {
         let bytes = serialize(samples);
         let stream_id = self.next_stream;
         self.next_stream = self.next_stream.wrapping_add(1);
@@ -122,7 +162,7 @@ impl Channel for UdpChannel {
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Option<Vec<Iq>>, TransportError> {
+    fn receive(&mut self) -> Result<Option<Vec<Iq>>, ChannelError> {
         loop {
             if let Some(burst) = self.completed.pop_front() {
                 return Ok(Some(burst));
@@ -196,4 +236,64 @@ fn deserialize(bytes: &[u8]) -> Vec<Iq> {
             q: f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn any_local() -> SocketAddr {
+        "127.0.0.1:0".parse().unwrap()
+    }
+
+    fn recv_blocking(channel: &mut UdpChannel) -> Vec<Iq> {
+        for _ in 0..200 {
+            if let Some(burst) = channel.receive().unwrap() {
+                return burst;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no burst received within timeout");
+    }
+
+    #[test]
+    fn a_burst_crosses_the_link() {
+        let mut rx = UdpChannel::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
+        let rx_addr = rx.local_addr().unwrap();
+        let mut tx = UdpChannel::bind(any_local(), rx_addr).unwrap();
+
+        let burst = vec![Iq { i: 0.5, q: -0.25 }, Iq { i: 1.0, q: 0.0 }];
+        tx.transmit(&burst).unwrap();
+
+        assert_eq!(recv_blocking(&mut rx), burst);
+    }
+
+    #[test]
+    fn a_burst_larger_than_one_datagram_fragments_and_reassembles() {
+        let mut rx = UdpChannel::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
+        let rx_addr = rx.local_addr().unwrap();
+        let mut tx = UdpChannel::bind(any_local(), rx_addr).unwrap();
+
+        // Comfortably larger than MAX_CHUNK once serialized (8 bytes/sample).
+        let burst: Vec<Iq> = (0..2000)
+            .map(|i| Iq {
+                i: i as f32,
+                q: -(i as f32),
+            })
+            .collect();
+        tx.transmit(&burst).unwrap();
+
+        assert_eq!(recv_blocking(&mut rx), burst);
+    }
+
+    #[test]
+    fn an_empty_burst_round_trips() {
+        let mut rx = UdpChannel::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
+        let rx_addr = rx.local_addr().unwrap();
+        let mut tx = UdpChannel::bind(any_local(), rx_addr).unwrap();
+
+        tx.transmit(&[]).unwrap();
+        assert_eq!(recv_blocking(&mut rx), Vec::<Iq>::new());
+    }
 }

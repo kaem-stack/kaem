@@ -7,8 +7,12 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-# the link layer — the transport port + every link implementation
+# the link layer — the transport port + dev-only scaffolding transports
 kaem-link = { path = "crates/kaem-link" }
+# the radio signal path, split into independent pure capability crates
+kaem-modem = { path = "crates/kaem-modem" }
+kaem-fragment = { path = "crates/kaem-fragment" }
+kaem-channel = { path = "crates/kaem-channel" }
 # in-process RF simulation, independent of the real link
 kaem-sim = { path = "crates/kaem-sim" }
 # application

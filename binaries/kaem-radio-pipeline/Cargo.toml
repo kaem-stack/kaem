@@ -5,3 +5,6 @@ edition.workspace = true
 
 [dependencies]
 kaem-link.workspace = true
+kaem-modem.workspace = true
+kaem-fragment.workspace = true
+kaem-channel.workspace = true

@@ -1,8 +1,14 @@
 //! `RadioPipeline` — the binary-side composition of the radio signal path:
-//! fragmentation + the FSK modem + a [`Channel`]. `kaem-link` only owns the
-//! individual pieces ([`Fragmenter`]/[`Reassembler`], [`Modem`], [`Channel`]);
-//! composing them into one [`Transport`] is an orchestrator's job, not a
-//! library's — see the `Architecture` section of the workspace `CLAUDE.md`.
+//! fragmentation + the FSK modem + a [`Channel`]. Each piece now lives in its
+//! own pure capability crate (`kaem-fragment`, `kaem-modem`, `kaem-channel`)
+//! with zero `kaem-*` dependencies between them; composing them into one
+//! [`Transport`] is an orchestrator's job, not a library's — see the
+//! `Architecture` section of the workspace `CLAUDE.md`.
+//!
+//! `kaem-modem` and `kaem-channel` each carry their own independent `Iq`
+//! type, so this pipeline is also the boundary that converts between them
+//! (a trivial copy of two `f32` fields) — the same shape `kaem-sandbox`'s
+//! `SimChannelAdapter` uses to bridge `kaem-channel`'s `Iq` and `kaem-sim`'s.
 //!
 //! This crate is itself binary-side composition code, not a `crates/*`
 //! protocol crate: both `kaem` and `kaem-sandbox` need the identical
@@ -12,10 +18,10 @@
 
 use std::net::SocketAddr;
 
-use kaem_link::{
-    Channel, DEFAULT_MAX_PAYLOAD, Fragmenter, Modem, ModemParams, Reassembler, Transport,
-    TransportError, UdpChannel,
-};
+use kaem_channel::{Channel, ChannelError, Iq as ChannelIq, UdpChannel};
+use kaem_fragment::{DEFAULT_MAX_PAYLOAD, Fragmenter, Reassembler};
+use kaem_link::{Transport, TransportError};
+use kaem_modem::{Iq as ModemIq, Modem, ModemParams};
 
 /// Composes [`Fragmenter`]/[`Reassembler`] + [`Modem`] + a [`Channel`] into a
 /// [`Transport`]: the real radio signal path, generic over the channel that
@@ -54,7 +60,8 @@ impl RadioPipeline {
 
     /// Bind locally and target `peer` over UDP-simulated airwaves.
     pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
-        Ok(Self::new(Box::new(UdpChannel::bind(bind, peer)?)))
+        let channel = UdpChannel::bind(bind, peer).map_err(to_transport_error)?;
+        Ok(Self::new(Box::new(channel)))
     }
 
     /// The address actually bound (useful when the caller passed port 0).
@@ -70,7 +77,10 @@ impl Transport for RadioPipeline {
         // a frame within one MTU is just a single fragment.
         for fragment in self.fragmenter.fragment(frame) {
             let samples = self.modem.modulate(&fragment);
-            self.channel.transmit(&samples)?;
+            let samples: Vec<ChannelIq> = to_channel_iq(&samples);
+            self.channel
+                .transmit(&samples)
+                .map_err(to_transport_error)?;
         }
         Ok(())
     }
@@ -81,8 +91,9 @@ impl Transport for RadioPipeline {
         // noise; a fragment that arrives feeds the reassembler, which only
         // surfaces a frame once every piece of it is in.
         loop {
-            match self.channel.receive()? {
+            match self.channel.receive().map_err(to_transport_error)? {
                 Some(samples) => {
+                    let samples = to_modem_iq(&samples);
                     if let Some(fragment) = self.modem.demodulate(&samples)
                         && let Some(frame) = self.reassembler.ingest(&fragment)
                     {
@@ -92,6 +103,25 @@ impl Transport for RadioPipeline {
                 None => return Ok(None),
             }
         }
+    }
+}
+
+fn to_channel_iq(samples: &[ModemIq]) -> Vec<ChannelIq> {
+    samples
+        .iter()
+        .map(|s| ChannelIq { i: s.i, q: s.q })
+        .collect()
+}
+
+fn to_modem_iq(samples: &[ChannelIq]) -> Vec<ModemIq> {
+    samples.iter().map(|s| ModemIq { i: s.i, q: s.q }).collect()
+}
+
+/// Translate a channel-layer error into the `Transport` port's error type —
+/// the orchestrator's job, since neither crate may name the other.
+fn to_transport_error(e: ChannelError) -> TransportError {
+    match e {
+        ChannelError::Io(io) => TransportError::Io(io),
     }
 }
 

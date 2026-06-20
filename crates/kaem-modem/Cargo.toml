@@ -1,0 +1,6 @@
+[package]
+name = "kaem-modem"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

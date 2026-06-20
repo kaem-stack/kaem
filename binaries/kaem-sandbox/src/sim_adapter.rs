@@ -1,13 +1,13 @@
-//! Adapts `kaem-sim`'s [`Medium`] to `kaem-link`'s [`Channel`] seam. Neither
-//! library crate names the other — `kaem-sim` carries its own `Iq` type,
-//! `kaem-link` carries its own — so this binary is the only place that
-//! converts between them and bridges the two trait surfaces.
+//! Adapts `kaem-sim`'s [`Medium`] to `kaem-channel`'s [`Channel`] seam.
+//! Neither library crate names the other — `kaem-sim` carries its own `Iq`
+//! type, `kaem-channel` carries its own — so this binary is the only place
+//! that converts between them and bridges the two trait surfaces.
 
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::rc::Rc;
 
-use kaem_link::{Channel, Iq as LinkIq, TransportError};
+use kaem_channel::{Channel, ChannelError, Iq as LinkIq};
 use kaem_sim::{Iq as SimIq, Medium, NodeId};
 
 pub struct SimChannelAdapter {
@@ -28,7 +28,7 @@ impl SimChannelAdapter {
 }
 
 impl Channel for SimChannelAdapter {
-    fn transmit(&mut self, samples: &[LinkIq]) -> Result<(), TransportError> {
+    fn transmit(&mut self, samples: &[LinkIq]) -> Result<(), ChannelError> {
         let burst: Vec<SimIq> = samples.iter().map(|s| SimIq { i: s.i, q: s.q }).collect();
         self.medium
             .borrow_mut()
@@ -36,7 +36,7 @@ impl Channel for SimChannelAdapter {
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Option<Vec<LinkIq>>, TransportError> {
+    fn receive(&mut self) -> Result<Option<Vec<LinkIq>>, ChannelError> {
         Ok(self
             .medium
             .borrow_mut()

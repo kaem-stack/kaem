@@ -2309,6 +2309,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaem-channel"
+version = "0.1.0"
+
+[[package]]
 name = "kaem-crypto"
 version = "0.1.0"
 dependencies = [
@@ -2319,6 +2323,10 @@ dependencies = [
  "rand 0.10.1",
  "zeroize",
 ]
+
+[[package]]
+name = "kaem-fragment"
+version = "0.1.0"
 
 [[package]]
 name = "kaem-link"
@@ -2338,6 +2346,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaem-modem"
+version = "0.1.0"
+
+[[package]]
 name = "kaem-node"
 version = "0.1.0"
 
@@ -2345,7 +2357,10 @@ version = "0.1.0"
 name = "kaem-radio-pipeline"
 version = "0.1.0"
 dependencies = [
+ "kaem-channel",
+ "kaem-fragment",
  "kaem-link",
+ "kaem-modem",
 ]
 
 [[package]]
@@ -2355,6 +2370,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "kaem-channel",
  "kaem-crypto",
  "kaem-link",
  "kaem-mesh",
