@@ -26,6 +26,14 @@ const NAMES: &[&str] = &[
     "alice", "bob", "carol", "dave", "erin", "frank", "grace", "heidi",
 ];
 
+/// Per-node send/receive/relay counters for the operator-facing stats.
+#[derive(Default, Clone, Copy)]
+pub struct NodeStats {
+    pub sent: u64,
+    pub received: u64,
+    pub relayed: u64,
+}
+
 /// One simulated node: its chat core, its encrypted-mesh layer, its radio
 /// transport over the shared medium, and where it sits in the field. The binary
 /// is the composition root that wires the (chat-agnostic) mesh to the
@@ -41,6 +49,7 @@ pub struct SimNode {
     /// Encrypted mesh: identity, pairing, and the seal/open + flood relay.
     pub mesh: MeshNode,
     pub transport: RadioTransport,
+    pub stats: NodeStats,
 }
 
 /// An expanding RF wave drawn from a transmit, for the canvas animation. Each
@@ -133,6 +142,7 @@ impl Sandbox {
             chat,
             mesh: MeshNode::new(Box::new(KaemCrypto)),
             transport,
+            stats: NodeStats::default(),
         });
         self.nodes.len() - 1
     }
@@ -161,6 +171,7 @@ impl Sandbox {
 
         for idx in 0..self.nodes.len() {
             let mut relays: Vec<Vec<u8>> = Vec::new();
+            let mut received = 0u64;
             let node = &mut self.nodes[idx];
             while let Ok(Some(frame)) = node.transport.recv() {
                 let inbound = node.mesh.on_frame(&frame);
@@ -168,14 +179,17 @@ impl Sandbox {
                 // history; the relay (if any) is rebroadcast below.
                 if let Some(payload) = inbound.payload {
                     node.chat.on_frame(&payload, now);
+                    received += 1;
                 }
                 if let Some(relay) = inbound.relay {
                     relays.push(relay);
                 }
             }
+            self.nodes[idx].stats.received += received;
             for relay in relays {
                 let node = &mut self.nodes[idx];
                 let _ = node.transport.send(&relay);
+                node.stats.relayed += 1;
                 let origin = node.pos;
                 let frame = Rc::new(relay);
                 self.pulses.push(Pulse {
@@ -226,6 +240,7 @@ impl Sandbox {
             }
         }
         for envelope in sealed_envelopes {
+            self.nodes[idx].stats.sent += 1;
             let origin = self.nodes[idx].pos;
             let frame = Rc::new(envelope);
             self.pulses.push(Pulse {
@@ -410,6 +425,23 @@ mod tests {
 
         let contact = &sandbox.nodes[idx].chat.contacts()[0];
         assert_eq!(contact.history.last().unwrap().body, "hello");
+    }
+
+    #[test]
+    fn send_and_receive_update_node_stats() {
+        let mut sandbox = empty();
+        let idx = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        sandbox.pair(idx, peer);
+        let peer_name = sandbox.nodes[peer].name.clone();
+
+        sandbox.send_from(idx, &peer_name, "hi".to_string());
+        assert_eq!(sandbox.nodes[idx].stats.sent, 1);
+
+        for _ in 0..5 {
+            sandbox.step();
+        }
+        assert_eq!(sandbox.nodes[peer].stats.received, 1);
     }
 
     #[test]

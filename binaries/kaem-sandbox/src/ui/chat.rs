@@ -40,6 +40,8 @@ pub fn show(ctx: &Context, node: &SimNode, state: &mut ChatState) -> Option<Stri
         .default_width(420.0)
         .default_height(320.0)
         .show(ctx, |ui| {
+            render_stats(ui, node);
+            ui.separator();
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(120.0);
@@ -54,6 +56,19 @@ pub fn show(ctx: &Context, node: &SimNode, state: &mut ChatState) -> Option<Stri
 
     state.open = open;
     submitted
+}
+
+/// A one-line sent/received/relayed counter, drawn at the top of the node's
+/// chat window above the contacts/conversation split.
+fn render_stats(ui: &mut egui::Ui, node: &SimNode) {
+    let stats = node.stats;
+    ui.label(
+        RichText::new(format!(
+            "sent {}  received {}  relayed {}",
+            stats.sent, stats.received, stats.relayed
+        ))
+        .color(theme::META),
+    );
 }
 
 fn render_contacts(ui: &mut egui::Ui, node: &SimNode, state: &mut ChatState) {
