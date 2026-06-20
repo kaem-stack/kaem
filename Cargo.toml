@@ -9,6 +9,8 @@ edition = "2024"
 [workspace.dependencies]
 # the link layer — the transport port + every link implementation
 kaem-link = { path = "crates/kaem-link" }
+# in-process RF simulation, independent of the real link
+kaem-sim = { path = "crates/kaem-sim" }
 # application
 kaem-node = { path = "crates/kaem-node" }
 kaem-mesh = { path = "crates/kaem-mesh" }
