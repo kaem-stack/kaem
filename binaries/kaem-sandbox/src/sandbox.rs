@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use kaem_link::{RadioTransport, Transport};
-use kaem_mesh::MeshNode;
+use kaem_mesh::{MeshNode, pairing::Store};
 use kaem_node::{Command, Node};
 use kaem_sim::{Medium, NodeId, Pos};
 
@@ -193,7 +193,10 @@ impl Sandbox {
             id,
             pos,
             chat,
-            mesh: MeshNode::new(Box::new(KaemCrypto)),
+            mesh: MeshNode::new(
+                Box::new(KaemCrypto),
+                Box::new(Store::open_in_memory().expect("in-memory sqlite must open")),
+            ),
             transport,
             stats: NodeStats::default(),
         });

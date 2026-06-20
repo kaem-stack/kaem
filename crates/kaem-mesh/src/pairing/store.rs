@@ -6,6 +6,8 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
+use crate::store_ops::ChatroomStore;
+
 /// One paired chatroom: the shared symmetric key and which peer it was
 /// established with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +80,24 @@ impl Store {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
             Err(_) => Vec::new(),
         }
+    }
+}
+
+impl ChatroomStore for Store {
+    fn insert(&self, chatroom: &Chatroom) -> Result<()> {
+        Store::insert(self, chatroom)
+    }
+
+    fn lookup(&self, id: u64) -> Option<Chatroom> {
+        Store::lookup(self, id)
+    }
+
+    fn find_by_peer(&self, name: &str) -> Option<Chatroom> {
+        Store::find_by_peer(self, name)
+    }
+
+    fn list(&self) -> Vec<Chatroom> {
+        Store::list(self)
     }
 }
 

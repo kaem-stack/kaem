@@ -16,14 +16,16 @@ use std::collections::{HashSet, VecDeque};
 
 mod crypto_ops;
 mod envelope;
-mod pairing;
+pub mod pairing;
+mod store_ops;
 #[cfg(test)]
 mod test_support;
 
 pub use crypto_ops::{CryptoOps, KeyPair};
+pub use store_ops::ChatroomStore;
 
 use envelope::{Envelope, decode_envelope, encode_envelope};
-use pairing::{Chatroom, Identity, Store, generate_identity, handshake};
+use pairing::{Chatroom, Identity, generate_identity, handshake};
 
 /// Hop budget for a freshly sealed message. Effectively unbounded: dedup via
 /// `seen` (each node relays a given `message_id` at most once) already
@@ -88,20 +90,22 @@ pub struct Inbound {
 /// crypto backend everything above is sealed with.
 pub struct MeshNode {
     identity: Identity,
-    store: Store,
+    store: Box<dyn ChatroomStore>,
     seen: SeenIds,
     crypto: Box<dyn CryptoOps>,
 }
 
 impl MeshNode {
-    /// Build a node backed by `crypto` for every keygen/seal/open it needs.
-    /// A binary supplies the implementation (typically backed by
-    /// `kaem-crypto`) — this crate never depends on one directly.
-    pub fn new(crypto: Box<dyn CryptoOps>) -> Self {
+    /// Build a node backed by `crypto` for every keygen/seal/open it needs,
+    /// and `store` for its chatroom membership. A binary supplies both
+    /// implementations (crypto typically backed by `kaem-crypto`, store
+    /// typically the SQLite-backed [`pairing::Store`]) — this crate never
+    /// depends on a crypto or persistence crate directly.
+    pub fn new(crypto: Box<dyn CryptoOps>, store: Box<dyn ChatroomStore>) -> Self {
         let identity = generate_identity(crypto.as_ref()).expect("keygen must succeed");
         Self {
             identity,
-            store: Store::open_in_memory().expect("in-memory sqlite must open"),
+            store,
             seen: SeenIds::new(),
             crypto,
         }
@@ -211,16 +215,25 @@ mod tests {
         b.finish_pairing(a_name, &sealed).expect("accept chatroom");
     }
 
+    /// A node backed by the test crypto stub and a fresh in-memory store —
+    /// what every test below needs and nothing more.
+    fn test_node() -> MeshNode {
+        MeshNode::new(
+            Box::new(crate::test_support::TestCrypto),
+            Box::new(pairing::Store::open_in_memory().expect("in-memory sqlite must open")),
+        )
+    }
+
     #[test]
     fn unpaired_seal_yields_nothing() {
-        let alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let alice = test_node();
         assert!(alice.seal("charlie", b"hi").is_none());
     }
 
     #[test]
     fn pairing_is_mutual() {
-        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
-        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut alice = test_node();
+        let mut charlie = test_node();
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         assert!(alice.is_paired_with("charlie"));
@@ -230,8 +243,8 @@ mod tests {
 
     #[test]
     fn paired_peer_opens_what_we_seal() {
-        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
-        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut alice = test_node();
+        let mut charlie = test_node();
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         let frame = alice
@@ -246,9 +259,9 @@ mod tests {
 
     #[test]
     fn relays_through_a_node_that_cannot_read_it() {
-        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
-        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto)); // never paired with anyone
-        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut alice = test_node();
+        let mut bob = test_node(); // never paired with anyone
+        let mut charlie = test_node();
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         // alice -> charlie, but bob is the only one in range first.
@@ -268,7 +281,7 @@ mod tests {
 
     #[test]
     fn duplicate_envelope_is_relayed_only_once() {
-        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut bob = test_node();
         let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 42,
@@ -282,7 +295,7 @@ mod tests {
 
     #[test]
     fn zero_ttl_envelope_is_not_relayed() {
-        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut bob = test_node();
         let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 7,
