@@ -131,12 +131,22 @@ channel), not at the `Transport` level.
 
 ## Workflow
 
-- Commit as you go, in small logical slices — one crate, one seam, one
+### Committing
+
+- **Always commit.** Never leave finished work sitting uncommitted in the
+  working tree. When a logical slice is done, commit it before moving on.
+- **Commit in multiple, small logical commits** — one crate, one seam, one
   refactor per commit — the way the existing history on this repo does it.
-  Don't let unrelated changes pile up uncommitted across multiple features.
-- Match the existing commit style: `type(scope): short imperative summary`
-  (e.g. `feat(sim): add Medium + SimChannel`, `refactor(radio): rename sdr
-  crate to kaem-radio`). Scope is usually the crate/module touched.
+  Never bundle unrelated changes into a single commit; split them, even when
+  they were written together. `git add -p` a working tree that mixes concerns.
+- **Commit message format:** `type(scope): short imperative summary`.
+  - `type` is one of: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`,
+    `perf`, `style`, `build`.
+  - `scope` is usually the crate or module touched (e.g. `radio`, `crypto`,
+    `mesh`, `codec`, `sandbox`, `workspace`).
+  - `summary` is imperative and lowercase, no trailing period.
+  - Examples: `feat(sim): add Medium + SimChannel`, `refactor(radio): rename
+    sdr crate to kaem-radio`, `fix(codec): reject envelope with bad crc`.
 - Prefer a build/test-green state at each commit where practical — it keeps
   `git bisect` and review useful.
 
