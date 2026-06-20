@@ -5,3 +5,4 @@
 pub mod chat;
 pub mod field;
 pub mod log;
+pub mod nodes;

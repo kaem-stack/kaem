@@ -9,7 +9,9 @@ use egui::{Align2, FontId, Painter, Rect, Response, Sense, Stroke, Ui};
 
 use kaem_sim::{Medium, Pos};
 
-use crate::field::{WAVE_SPEED, field_radius_to_screen, field_to_screen, screen_to_field};
+use crate::field::{
+    FIELD, View, WAVE_SPEED, field_radius_to_screen, field_to_screen, screen_to_field,
+};
 use crate::sandbox::{Hop, Pulse, hop_progress};
 use crate::theme;
 
@@ -26,11 +28,22 @@ const CURSOR_RADIUS: f32 = 3.0;
 const HOP_MARKER_RADIUS: f32 = 3.0;
 const RANGE_STROKE_ALPHA: u8 = 50;
 
+/// Grid line spacing in field units (meters) — graph-paper backdrop for the
+/// canvas, the brutalist "protocol sandbox" tell rather than a blank dark
+/// panel. Every line is labeled in meters so the field reads as a real
+/// distance map, not an abstract coordinate space.
+const GRID_SPACING: f32 = 10.0;
+const GRID_ALPHA: u8 = 28;
+const GRID_LABEL_ALPHA: u8 = 110;
+
 /// A labeled node drawn on the canvas.
 pub struct CanvasNode<'a> {
     pub name: &'a str,
     pub pos: Pos,
     pub emphasized: bool,
+    /// Whether this node holds at least one chatroom — drawn filled vs.
+    /// hollow so an isolated node reads at a glance, without opening it.
+    pub paired: bool,
 }
 
 /// What a click on the canvas resolved to.
@@ -60,6 +73,8 @@ pub struct Canvas<'a> {
     pub hops: &'a [Hop],
     pub now: u64,
     pub cursor: Pos,
+    /// The current zoom/pan window onto the field — see [`crate::field::View`].
+    pub view: View,
 }
 
 impl Canvas<'_> {
@@ -85,6 +100,7 @@ impl Canvas<'_> {
             };
         }
 
+        self.draw_grid(&painter, inner);
         self.draw_range_circles(&painter, inner);
         self.draw_links(&painter, inner);
         self.draw_waves(&painter, inner);
@@ -108,7 +124,7 @@ impl Canvas<'_> {
         if let Some(frame) = self.hit_test_frames(inner, point) {
             return Some(CanvasClick::Frame(frame));
         }
-        let pos = screen_to_field(inner, point);
+        let pos = screen_to_field(inner, point, self.view);
         match nearest_node(self.nodes, pos, HIT_THRESHOLD) {
             Some(idx) => Some(CanvasClick::Node(idx)),
             None => Some(CanvasClick::Field(pos)),
@@ -127,8 +143,8 @@ impl Canvas<'_> {
             if radius <= 0.0 || radius > range {
                 continue;
             }
-            let center = field_to_screen(inner, pulse.origin);
-            let screen_radius = field_radius_to_screen(inner, radius);
+            let center = field_to_screen(inner, pulse.origin, self.view);
+            let screen_radius = field_radius_to_screen(inner, radius, self.view);
             let dist = (point - center).length();
             if (dist - screen_radius).abs() <= FRAME_HIT_RADIUS_PX {
                 return Some(pulse.frame.clone());
@@ -137,7 +153,7 @@ impl Canvas<'_> {
         for hop in self.hops {
             let progress = hop_progress(hop, self.now);
             let marker = lerp_pos(hop.from, hop.to, progress);
-            let center = field_to_screen(inner, marker);
+            let center = field_to_screen(inner, marker, self.view);
             if (point - center).length() <= FRAME_HIT_RADIUS_PX {
                 return Some(hop.frame.clone());
             }
@@ -145,11 +161,49 @@ impl Canvas<'_> {
         None
     }
 
+    /// Graph-paper grid across the whole field, at [`GRID_SPACING`] meters,
+    /// labeled along the top and left edges — drawn first so every other
+    /// layer sits on top of it.
+    fn draw_grid(&self, painter: &Painter, inner: Rect) {
+        let stroke = Stroke::new(1.0, theme::with_alpha(theme::BORDER, GRID_ALPHA));
+        let label_color = theme::with_alpha(theme::META, GRID_LABEL_ALPHA);
+        let steps = (FIELD / GRID_SPACING).round() as i32;
+        for i in 0..=steps {
+            let coord = i as f32 * GRID_SPACING;
+            let top = field_to_screen(inner, Pos { x: coord, y: 0.0 }, self.view);
+            let bottom = field_to_screen(inner, Pos { x: coord, y: FIELD }, self.view);
+            painter.line_segment([top, bottom], stroke);
+
+            let left = field_to_screen(inner, Pos { x: 0.0, y: coord }, self.view);
+            let right = field_to_screen(inner, Pos { x: FIELD, y: coord }, self.view);
+            painter.line_segment([left, right], stroke);
+
+            if inner.contains(top) {
+                painter.text(
+                    top + egui::vec2(2.0, 1.0),
+                    Align2::LEFT_TOP,
+                    format!("{coord:.0}m"),
+                    FontId::monospace(9.0),
+                    label_color,
+                );
+            }
+            if inner.contains(left) {
+                painter.text(
+                    left + egui::vec2(2.0, 1.0),
+                    Align2::LEFT_TOP,
+                    format!("{coord:.0}m"),
+                    FontId::monospace(9.0),
+                    label_color,
+                );
+            }
+        }
+    }
+
     fn draw_range_circles(&self, painter: &Painter, inner: Rect) {
         let range = self.medium.range();
-        let screen_radius = field_radius_to_screen(inner, range);
+        let screen_radius = field_radius_to_screen(inner, range, self.view);
         for node in self.nodes {
-            let center = field_to_screen(inner, node.pos);
+            let center = field_to_screen(inner, node.pos, self.view);
             painter.circle_stroke(
                 center,
                 screen_radius,
@@ -166,8 +220,8 @@ impl Canvas<'_> {
             let Some(pb) = self.medium.position(b) else {
                 continue;
             };
-            let pa = field_to_screen(inner, pa);
-            let pb = field_to_screen(inner, pb);
+            let pa = field_to_screen(inner, pa, self.view);
+            let pb = field_to_screen(inner, pb, self.view);
             painter.line_segment([pa, pb], Stroke::new(1.0, theme::FAINT));
         }
     }
@@ -180,8 +234,8 @@ impl Canvas<'_> {
             if radius <= 0.0 || radius > range {
                 continue;
             }
-            let center = field_to_screen(inner, pulse.origin);
-            let screen_radius = field_radius_to_screen(inner, radius);
+            let center = field_to_screen(inner, pulse.origin, self.view);
+            let screen_radius = field_radius_to_screen(inner, radius, self.view);
             painter.circle_stroke(center, screen_radius, Stroke::new(1.0, theme::META));
         }
     }
@@ -194,16 +248,19 @@ impl Canvas<'_> {
         for hop in self.hops {
             let progress = hop_progress(hop, self.now);
             let marker = lerp_pos(hop.from, hop.to, progress);
-            let center = field_to_screen(inner, marker);
+            let center = field_to_screen(inner, marker, self.view);
             painter.circle_filled(center, HOP_MARKER_RADIUS, theme::ME);
         }
     }
 
     fn draw_nodes(&self, painter: &Painter, inner: Rect) {
         for node in self.nodes {
-            let center = field_to_screen(inner, node.pos);
-            let color = theme::ME;
-            painter.circle_filled(center, NODE_RADIUS, color);
+            let center = field_to_screen(inner, node.pos, self.view);
+            if node.paired {
+                painter.circle_filled(center, NODE_RADIUS, theme::ME);
+            } else {
+                painter.circle_stroke(center, NODE_RADIUS, Stroke::new(1.5, theme::META));
+            }
             if node.emphasized {
                 painter.circle_stroke(center, NODE_RADIUS + 2.0, Stroke::new(1.5, theme::ME));
             }
@@ -218,7 +275,7 @@ impl Canvas<'_> {
     }
 
     fn draw_cursor(&self, painter: &Painter, inner: Rect) {
-        let center = field_to_screen(inner, self.cursor);
+        let center = field_to_screen(inner, self.cursor, self.view);
         painter.circle_stroke(center, CURSOR_RADIUS, Stroke::new(1.0, theme::META));
     }
 }

@@ -2,7 +2,7 @@
 //! (`binaries/kaem/src/tui/theme.rs`). Duplicated rather than shared — the
 //! two binaries don't depend on each other and the palette is ~10 constants.
 
-use egui::{Color32, Visuals};
+use egui::{Color32, FontFamily, FontId, Style, TextStyle, Visuals};
 
 pub const ME: Color32 = Color32::from_rgb(216, 160, 64);
 pub const THEM: Color32 = Color32::from_rgb(158, 152, 142);
@@ -61,4 +61,34 @@ pub fn visuals() -> Visuals {
     visuals.widgets.open.corner_radius = zero;
 
     visuals
+}
+
+/// Monospace everywhere, tight spacing, no rounded item backgrounds — a
+/// terminal/protocol-analyzer feel rather than a default proportional-font
+/// desktop app.
+pub fn style() -> Style {
+    let mut style = Style::default();
+
+    for (text_style, size) in [
+        (TextStyle::Small, 11.0),
+        (TextStyle::Body, 13.0),
+        (TextStyle::Button, 13.0),
+        (TextStyle::Heading, 16.0),
+        (TextStyle::Monospace, 13.0),
+    ] {
+        style
+            .text_styles
+            .insert(text_style, FontId::new(size, FontFamily::Monospace));
+    }
+
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+    style.spacing.window_margin = egui::Margin::same(8);
+    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+
+    // `Style` owns its own `Visuals` — fold ours in here so a single
+    // `set_style` call carries both, rather than two calls racing to decide
+    // which `Visuals` wins.
+    style.visuals = visuals();
+
+    style
 }

@@ -9,13 +9,16 @@ use std::time::Duration;
 use eframe::CreationContext;
 use egui::{Context, RichText, Ui};
 
-use crate::field::screen_to_field;
+use crate::field::{
+    MAX_ZOOM, MIN_ZOOM, View, field_radius_to_screen, field_to_screen, screen_to_field, zoom_at,
+};
 use crate::frame_info::{self, DecodedFrame};
 use crate::sandbox::Sandbox;
 use crate::theme;
 use crate::ui::chat::{self, ChatState};
-use crate::ui::field::{self, Canvas, CanvasClick, CanvasNode};
+use crate::ui::field::{self as canvas_field, Canvas, CanvasClick, CanvasNode};
 use crate::ui::log::render_log_panel;
+use crate::ui::nodes::{self, NodeAction};
 
 const CURSOR_STEP: f32 = 2.0;
 
@@ -40,11 +43,14 @@ pub struct SandboxApp {
     selected: Vec<usize>,
     /// The frame currently shown in the packet inspector, if any.
     inspecting: Option<Rc<Vec<u8>>>,
+    /// The canvas's zoom/pan window onto the field — UI-only, the engine
+    /// has no notion of a viewport.
+    view: View,
 }
 
 impl SandboxApp {
     pub fn new(cc: &CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(theme::visuals());
+        cc.egui_ctx.set_global_style(theme::style());
         let sandbox = Sandbox::new();
         let chats = sandbox.nodes.iter().map(|_| ChatState::default()).collect();
         Self {
@@ -57,6 +63,7 @@ impl SandboxApp {
             select_anchor: None,
             selected: Vec::new(),
             inspecting: None,
+            view: View::default(),
         }
     }
 
@@ -64,6 +71,44 @@ impl SandboxApp {
     fn sync_chat_state(&mut self) {
         while self.chats.len() < self.sandbox.nodes.len() {
             self.chats.push(ChatState::default());
+        }
+    }
+
+    /// Discard the current sandbox and every piece of UI-only state that
+    /// referenced it, replacing it with a freshly seeded one. Local-only
+    /// state (no file or process involved), so this is a plain rebuild
+    /// rather than anything needing confirmation.
+    fn reset(&mut self) {
+        self.sandbox = Sandbox::new();
+        self.chats = self
+            .sandbox
+            .nodes
+            .iter()
+            .map(|_| ChatState::default())
+            .collect();
+        self.pairing_dialog_open = false;
+        self.pairing_a = None;
+        self.pairing_b = None;
+        self.dragging = None;
+        self.select_anchor = None;
+        self.selected.clear();
+        self.inspecting = None;
+        self.view = View::default();
+    }
+
+    /// Remove the node at `idx` from the engine and every piece of lockstep
+    /// UI state: its chat window and its entry (if any) in `selected`,
+    /// shifting indices above `idx` down by one to match `Vec::remove`.
+    fn remove_node(&mut self, idx: usize) {
+        self.sandbox.remove_node(idx);
+        if idx < self.chats.len() {
+            self.chats.remove(idx);
+        }
+        self.selected.retain(|&i| i != idx);
+        for i in self.selected.iter_mut() {
+            if *i > idx {
+                *i -= 1;
+            }
         }
     }
 }
@@ -84,7 +129,8 @@ impl eframe::App for SandboxApp {
 
         self.top_bar(ui);
         self.bottom_bar(ui);
-        render_log_panel(ui, &self.sandbox, &mut self.inspecting);
+        self.nodes_panel(ui);
+        render_log_panel(ui, &mut self.sandbox, &mut self.inspecting);
         self.central_canvas(ui);
         self.chat_windows(ui.ctx());
         self.pairing_dialog(ui.ctx());
@@ -99,42 +145,21 @@ impl SandboxApp {
                 ui.label(RichText::new("kaem sandbox").color(theme::ME).strong());
                 ui.separator();
 
-                if ui.button("add node").clicked() {
-                    let pos = self.sandbox.cursor;
-                    self.sandbox.add_node(pos);
-                    self.sync_chat_state();
-                }
-
                 let label = if self.sandbox.running { "pause" } else { "run" };
                 if ui.button(label).clicked() {
                     self.sandbox.toggle_running();
                 }
-
                 if ui
                     .add_enabled(!self.sandbox.running, egui::Button::new("step"))
                     .clicked()
                 {
                     self.sandbox.step();
                 }
-
-                if ui.button("pair").clicked() {
-                    self.pairing_dialog_open = true;
-                    self.pairing_a = None;
-                    self.pairing_b = None;
+                if ui.button("reset").clicked() {
+                    self.reset();
                 }
 
                 ui.separator();
-
-                let mut range = self.sandbox.medium.borrow().range();
-                if ui
-                    .add(egui::Slider::new(&mut range, 1.0..=150.0).text("range"))
-                    .changed()
-                {
-                    self.sandbox.medium.borrow_mut().set_range(range);
-                }
-
-                ui.separator();
-
                 ui.label(RichText::new("speed").color(theme::META));
                 for preset in SPEED_PRESETS {
                     let label = format!("{preset}x");
@@ -142,6 +167,46 @@ impl SandboxApp {
                     if ui.selectable_label(active, label).clicked() {
                         self.sandbox.speed = preset;
                     }
+                }
+
+                ui.separator();
+                if ui.button("add node").clicked() {
+                    let pos = self.sandbox.cursor;
+                    self.sandbox.add_node(pos);
+                    self.sync_chat_state();
+                }
+                if ui.button("pair...").clicked() {
+                    self.pairing_dialog_open = true;
+                    self.pairing_a = None;
+                    self.pairing_b = None;
+                }
+
+                ui.separator();
+                let mut range = self.sandbox.medium.borrow().range();
+                if ui
+                    .add(egui::Slider::new(&mut range, 1.0..=150.0).text("range (m)"))
+                    .changed()
+                {
+                    self.sandbox.medium.borrow_mut().set_range(range);
+                }
+                let mut loss = self.sandbox.medium.borrow().loss();
+                if ui
+                    .add(egui::Slider::new(&mut loss, 0.0..=1.0).text("loss"))
+                    .changed()
+                {
+                    self.sandbox.medium.borrow_mut().set_loss(loss);
+                }
+
+                ui.separator();
+                if ui.small_button("-").clicked() {
+                    self.view.zoom = (self.view.zoom / 1.25).clamp(MIN_ZOOM, MAX_ZOOM);
+                }
+                ui.label(RichText::new(format!("{:.1}x", self.view.zoom)).color(theme::META));
+                if ui.small_button("+").clicked() {
+                    self.view.zoom = (self.view.zoom * 1.25).clamp(MIN_ZOOM, MAX_ZOOM);
+                }
+                if ui.button("reset view").clicked() {
+                    self.view = View::default();
                 }
 
                 if !self.selected.is_empty() {
@@ -164,6 +229,27 @@ impl SandboxApp {
         });
     }
 
+    /// Draw the left-docked node roster and resolve whatever quick action
+    /// the operator clicked — opening a chat, jumping into the pairing
+    /// dialog pre-filled with this node, or removing it outright.
+    fn nodes_panel(&mut self, ui: &mut Ui) {
+        let action = nodes::render_nodes_panel(ui, &self.sandbox, &self.selected);
+        match action {
+            Some(NodeAction::Open(idx)) => {
+                if let Some(state) = self.chats.get_mut(idx) {
+                    state.open = true;
+                }
+            }
+            Some(NodeAction::Pair(idx)) => {
+                self.pairing_dialog_open = true;
+                self.pairing_a = Some(idx);
+                self.pairing_b = None;
+            }
+            Some(NodeAction::Remove(idx)) => self.remove_node(idx),
+            None => {}
+        }
+    }
+
     /// Pairwise-pair every currently selected node with every other selected
     /// node.
     fn pair_selected(&mut self) {
@@ -176,18 +262,13 @@ impl SandboxApp {
 
     /// Remove every currently selected node from the sandbox, highest index
     /// first so earlier indices in `self.selected` stay valid as we go.
-    /// Keeps `chats` in lockstep.
     fn remove_selected(&mut self) {
         let mut indices = self.selected.clone();
         indices.sort_unstable();
         indices.dedup();
         for idx in indices.into_iter().rev() {
-            self.sandbox.remove_node(idx);
-            if idx < self.chats.len() {
-                self.chats.remove(idx);
-            }
+            self.remove_node(idx);
         }
-        self.selected.clear();
     }
 
     fn bottom_bar(&self, ui: &mut Ui) {
@@ -198,6 +279,22 @@ impl SandboxApp {
                 ui.separator();
                 ui.label(RichText::new(format!("[{state}]")).color(theme::META));
                 ui.separator();
+
+                let nodes = self.sandbox.nodes.len();
+                let links = self.sandbox.medium.borrow().reachable().len();
+                let in_flight = self.sandbox.pulses.len();
+                let (sent, received, relayed) = self.sandbox.nodes.iter().fold(
+                    (0u64, 0u64, 0u64),
+                    |(s, r, x), n| (s + n.stats.sent, r + n.stats.received, x + n.stats.relayed),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "nodes {nodes}  links {links}  in-flight {in_flight}  sent {sent}  recv {received}  relay {relayed}"
+                    ))
+                    .color(theme::META),
+                );
+                ui.separator();
+
                 let hint = "click a node to open its chat; drag empty field to select; click a wave/hop to inspect";
                 ui.label(RichText::new(hint).color(theme::META));
             });
@@ -216,6 +313,7 @@ impl SandboxApp {
                     pos: n.pos,
                     emphasized: self.chats.get(i).is_some_and(|c| c.open)
                         || self.selected.contains(&i),
+                    paired: !n.mesh.paired_peers().is_empty(),
                 })
                 .collect();
 
@@ -227,9 +325,12 @@ impl SandboxApp {
                 hops: &self.sandbox.hops,
                 now: self.sandbox.clock,
                 cursor: self.sandbox.cursor,
+                view: self.view,
             };
             let output = canvas.show(ui);
             drop(medium);
+
+            handle_zoom_and_pan(ui, &output.response, output.inner, &mut self.view);
 
             let pointer = output.response.interact_pointer_pos();
 
@@ -238,8 +339,9 @@ impl SandboxApp {
                 && output.response.drag_started()
                 && let Some(point) = pointer
             {
-                let pos = screen_to_field(output.inner, point);
-                self.dragging = field::nearest_node(&canvas_nodes, pos, field::HIT_THRESHOLD);
+                let pos = screen_to_field(output.inner, point, self.view);
+                self.dragging =
+                    canvas_field::nearest_node(&canvas_nodes, pos, canvas_field::HIT_THRESHOLD);
                 if self.dragging.is_none() {
                     // Drag started on bare field — begin a multi-select
                     // rectangle instead of moving a node.
@@ -250,7 +352,7 @@ impl SandboxApp {
             if let Some(idx) = self.dragging {
                 if let Some(point) = pointer {
                     self.sandbox
-                        .move_node(idx, screen_to_field(output.inner, point));
+                        .move_node(idx, screen_to_field(output.inner, point, self.view));
                 }
                 if output.response.drag_stopped() {
                     self.dragging = None;
@@ -272,7 +374,7 @@ impl SandboxApp {
                             .iter()
                             .enumerate()
                             .filter(|(_, n)| {
-                                rect.contains(crate::field::field_to_screen(output.inner, n.pos))
+                                rect.contains(field_to_screen(output.inner, n.pos, self.view))
                             })
                             .map(|(i, _)| i)
                             .collect();
@@ -431,4 +533,33 @@ impl SandboxApp {
             self.inspecting = None;
         }
     }
+}
+
+/// Mouse-wheel zoom (anchored on the pointer, so the field point under the
+/// cursor stays put) and middle-button-drag pan, both only while the pointer
+/// is over the canvas. A free function (not a `SandboxApp` method) so it can
+/// take just `&mut View` — the canvas's per-frame node list otherwise holds
+/// an immutable borrow of `self.sandbox` alive across this call.
+fn handle_zoom_and_pan(ui: &Ui, response: &egui::Response, inner: egui::Rect, view: &mut View) {
+    if !response.hovered() {
+        return;
+    }
+    ui.input(|i| {
+        let scroll = i.smooth_scroll_delta.y;
+        if scroll.abs() > f32::EPSILON
+            && let Some(point) = i.pointer.hover_pos()
+        {
+            let factor = (1.0 + scroll * 0.0015).clamp(0.1, 10.0);
+            *view = zoom_at(inner, *view, point, view.zoom * factor);
+        }
+
+        if i.pointer.button_down(egui::PointerButton::Middle) {
+            let delta = i.pointer.delta();
+            let scale = field_radius_to_screen(inner, 1.0, *view);
+            if delta != egui::Vec2::ZERO && scale > 0.0 {
+                view.center.x -= delta.x / scale;
+                view.center.y -= delta.y / scale;
+            }
+        }
+    });
 }
