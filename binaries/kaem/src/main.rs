@@ -76,7 +76,9 @@ impl Settings {
         Ok(match self.backend {
             Backend::Loopback => Box::new(kaem_link::Loopback::new()),
             Backend::Udp => Box::new(kaem_link::UdpTransport::bind(self.bind, self.peer)?),
-            Backend::Radio => Box::new(kaem_link::RadioTransport::bind(self.bind, self.peer)?),
+            Backend::Radio => Box::new(kaem_radio_pipeline::RadioPipeline::bind(
+                self.bind, self.peer,
+            )?),
         })
     }
 }

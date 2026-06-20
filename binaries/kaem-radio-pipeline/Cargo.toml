@@ -1,0 +1,7 @@
+[package]
+name = "kaem-radio-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kaem-link.workspace = true

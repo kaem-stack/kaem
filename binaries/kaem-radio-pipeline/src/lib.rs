@@ -1,20 +1,27 @@
-//! Radio transport — RF over the air, implemented as a software-defined radio.
+//! `RadioPipeline` — the binary-side composition of the radio signal path:
+//! fragmentation + the FSK modem + a [`Channel`]. `kaem-link` only owns the
+//! individual pieces ([`Fragmenter`]/[`Reassembler`], [`Modem`], [`Channel`]);
+//! composing them into one [`Transport`] is an orchestrator's job, not a
+//! library's — see the `Architecture` section of the workspace `CLAUDE.md`.
 //!
-//! This adapter is the real radio signal path: a frame is FSK-modulated into
-//! baseband IQ samples by the [`modem`](crate::modem), then those samples are
-//! carried to the peer by a [`Channel`](crate::channel::Channel). Today the
-//! channel is UDP (simulated airwaves); swap in a SoapySDR-backed channel and
-//! the same modem drives real hardware — the [`Transport`] interface never
-//! notices.
+//! This crate is itself binary-side composition code, not a `crates/*`
+//! protocol crate: both `kaem` and `kaem-sandbox` need the identical
+//! fragment→modulate→channel pipeline and differ only in which [`Channel`]
+//! they hand it (`UdpChannel` vs. a sim adapter), so the glue lives here once
+//! rather than being duplicated in each binary.
 
 use std::net::SocketAddr;
 
-use crate::channel::{Channel, UdpChannel};
-use crate::fragment::{DEFAULT_MAX_PAYLOAD, Fragmenter, Reassembler};
-use crate::modem::{Modem, ModemParams};
-use crate::transport::{Transport, TransportError};
+use kaem_link::{
+    Channel, DEFAULT_MAX_PAYLOAD, Fragmenter, Modem, ModemParams, Reassembler, Transport,
+    TransportError, UdpChannel,
+};
 
-pub struct RadioTransport {
+/// Composes [`Fragmenter`]/[`Reassembler`] + [`Modem`] + a [`Channel`] into a
+/// [`Transport`]: the real radio signal path, generic over the channel that
+/// actually carries the IQ bursts (UDP today, an SDR or an in-process RF
+/// simulation elsewhere).
+pub struct RadioPipeline {
     modem: Modem,
     channel: Box<dyn Channel>,
     /// Splits an outbound frame into MTU-sized pieces; reassembles the inbound
@@ -24,16 +31,18 @@ pub struct RadioTransport {
     reassembler: Reassembler,
 }
 
-impl RadioTransport {
-    /// Build a radio over any [`Channel`] — UDP today, an SDR device later —
-    /// with the default modem parameters and over-the-air MTU.
+impl RadioPipeline {
+    /// Build a radio pipeline over any [`Channel`] — UDP today, an SDR device
+    /// or an in-process simulation elsewhere — with the default modem
+    /// parameters and over-the-air MTU.
     pub fn new(channel: Box<dyn Channel>) -> Self {
         Self::with_mtu(channel, DEFAULT_MAX_PAYLOAD)
     }
 
-    /// Build a radio with an explicit over-the-air MTU: the most bytes of a
-    /// caller's frame carried per modulated fragment. A binary tunes this to
-    /// the frame size its real (or simulated) front-end can push in one burst.
+    /// Build a radio pipeline with an explicit over-the-air MTU: the most
+    /// bytes of a caller's frame carried per modulated fragment. A binary
+    /// tunes this to the frame size its real (or simulated) front-end can
+    /// push in one burst.
     pub fn with_mtu(channel: Box<dyn Channel>, mtu: usize) -> Self {
         Self {
             modem: Modem::new(ModemParams::default()),
@@ -43,20 +52,19 @@ impl RadioTransport {
         }
     }
 
-    /// Bind locally and target `peer` for the simulated RF channel.
+    /// Bind locally and target `peer` over UDP-simulated airwaves.
     pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
         Ok(Self::new(Box::new(UdpChannel::bind(bind, peer)?)))
     }
 
     /// The address actually bound (useful when the caller passed port 0).
     /// Channels without an address (e.g. the in-process sim) return `None`.
-    #[allow(dead_code)] // used in tests; useful for a future status line
     pub fn local_addr(&self) -> Option<SocketAddr> {
         self.channel.local_addr()
     }
 }
 
-impl Transport for RadioTransport {
+impl Transport for RadioPipeline {
     fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
         // Split into MTU-sized fragments and modulate each as its own burst;
         // a frame within one MTU is just a single fragment.
@@ -96,14 +104,14 @@ mod tests {
         "127.0.0.1:0".parse().unwrap()
     }
 
-    fn pair() -> (RadioTransport, RadioTransport) {
-        let rx = RadioTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
+    fn pair() -> (RadioPipeline, RadioPipeline) {
+        let rx = RadioPipeline::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
         let rx_addr = rx.local_addr().expect("udp channel has a local addr");
-        let tx = RadioTransport::bind(any_local(), rx_addr).unwrap();
+        let tx = RadioPipeline::bind(any_local(), rx_addr).unwrap();
         (tx, rx)
     }
 
-    fn recv_blocking(transport: &mut RadioTransport) -> Vec<u8> {
+    fn recv_blocking(transport: &mut RadioPipeline) -> Vec<u8> {
         for _ in 0..400 {
             if let Some(frame) = transport.recv().unwrap() {
                 return frame;
@@ -134,13 +142,15 @@ mod tests {
     fn frame_past_the_mtu_travels_as_fragments_and_rebuilds() {
         // A deliberately tiny MTU so a modest frame is forced across several
         // over-the-air fragments, each its own modulated burst.
-        let rx = RadioTransport::with_mtu(
+        let rx = RadioPipeline::with_mtu(
             Box::new(UdpChannel::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap()),
             16,
         );
         let rx_addr = rx.local_addr().expect("udp channel has a local addr");
-        let mut tx =
-            RadioTransport::with_mtu(Box::new(UdpChannel::bind(any_local(), rx_addr).unwrap()), 16);
+        let mut tx = RadioPipeline::with_mtu(
+            Box::new(UdpChannel::bind(any_local(), rx_addr).unwrap()),
+            16,
+        );
         let mut rx = rx;
 
         let frame = b"this message is comfortably longer than a sixteen byte mtu";

@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 kaem-link = { workspace = true, features = ["dev-transports"] }
+kaem-radio-pipeline.workspace = true
 kaem-node.workspace = true
 chrono.workspace = true
 color-eyre.workspace = true

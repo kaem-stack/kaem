@@ -16,6 +16,9 @@ kaem-node = { path = "crates/kaem-node" }
 kaem-mesh = { path = "crates/kaem-mesh" }
 # crypto primitives
 kaem-crypto = { path = "crates/kaem-crypto" }
+# binary-side composition: the radio pipeline glue shared by the two
+# orchestrator binaries (not a `crates/*` protocol crate — it composes them)
+kaem-radio-pipeline = { path = "binaries/kaem-radio-pipeline" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"

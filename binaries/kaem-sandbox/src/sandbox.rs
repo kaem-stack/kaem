@@ -6,9 +6,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use kaem_link::{RadioTransport, Transport};
+use kaem_link::Transport;
 use kaem_mesh::{MeshNode, pairing::Store};
 use kaem_node::{Command, Node};
+use kaem_radio_pipeline::RadioPipeline;
 use kaem_sim::{Medium, NodeId, Pos};
 
 use crate::crypto_adapter::KaemCrypto;
@@ -58,7 +59,7 @@ pub struct SimNode {
     pub chat: Node,
     /// Encrypted mesh: identity, pairing, and the seal/open + flood relay.
     pub mesh: MeshNode,
-    pub transport: RadioTransport,
+    pub transport: RadioPipeline,
     pub stats: NodeStats,
 }
 
@@ -181,7 +182,7 @@ impl Sandbox {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("n{}", self.nodes.len()));
 
-        let transport = RadioTransport::new(Box::new(SimChannelAdapter::new(
+        let transport = RadioPipeline::new(Box::new(SimChannelAdapter::new(
             id,
             self.medium.clone(),
             self.now.clone(),

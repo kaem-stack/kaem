@@ -37,7 +37,7 @@ const HEADER: usize = 6;
 /// Default bytes of the caller's frame carried per fragment (the header is on
 /// top of this). Small enough that a normal sealed envelope splits into a
 /// couple of over-the-air frames, which is the whole point of fragmenting.
-pub(crate) const DEFAULT_MAX_PAYLOAD: usize = 64;
+pub const DEFAULT_MAX_PAYLOAD: usize = 64;
 
 /// Cap on half-assembled messages held at once; the oldest set is dropped when
 /// exceeded so a fragment lost to the channel can't leak memory. Mirrors the
@@ -46,13 +46,13 @@ const MAX_PENDING: usize = 16;
 
 /// Splits whole frames into ordered, sequence-tagged fragments. Owns the
 /// wrapping `msg_id` counter so each frame's fragments share an id.
-pub(crate) struct Fragmenter {
+pub struct Fragmenter {
     max_payload: usize,
     next_msg_id: u16,
 }
 
 impl Fragmenter {
-    pub(crate) fn new(max_payload: usize) -> Self {
+    pub fn new(max_payload: usize) -> Self {
         Self {
             max_payload: max_payload.max(1),
             next_msg_id: 0,
@@ -62,7 +62,7 @@ impl Fragmenter {
     /// Split `frame` into one or more fragments. An empty frame still yields a
     /// single (empty-chunk) fragment so it reassembles to an empty frame rather
     /// than vanishing.
-    pub(crate) fn fragment(&mut self, frame: &[u8]) -> Vec<Vec<u8>> {
+    pub fn fragment(&mut self, frame: &[u8]) -> Vec<Vec<u8>> {
         let msg_id = self.next_msg_id;
         self.next_msg_id = self.next_msg_id.wrapping_add(1);
 
@@ -91,12 +91,18 @@ impl Fragmenter {
 /// Rebuilds whole frames from the fragments it's fed, tolerating out-of-order
 /// and duplicate delivery. State persists across calls (one frame's fragments
 /// may arrive over several `recv`s).
-pub(crate) struct Reassembler {
+pub struct Reassembler {
     pending: HashMap<u16, Partial>,
 }
 
+impl Default for Reassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Reassembler {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
         }
@@ -106,7 +112,7 @@ impl Reassembler {
     /// frame if this fragment was the last one missing. Malformed or
     /// inconsistent fragments are ignored (`None`), the same way the modem
     /// drops a frame that fails CRC.
-    pub(crate) fn ingest(&mut self, fragment: &[u8]) -> Option<Vec<u8>> {
+    pub fn ingest(&mut self, fragment: &[u8]) -> Option<Vec<u8>> {
         if fragment.len() < HEADER {
             return None;
         }
@@ -182,7 +188,10 @@ mod tests {
 
     /// Feed every fragment of a frame through a fresh reassembler in the given
     /// order, returning whatever it completes.
-    fn reassemble(fragments: &[Vec<u8>], order: impl IntoIterator<Item = usize>) -> Option<Vec<u8>> {
+    fn reassemble(
+        fragments: &[Vec<u8>],
+        order: impl IntoIterator<Item = usize>,
+    ) -> Option<Vec<u8>> {
         let mut r = Reassembler::new();
         let mut done = None;
         for i in order {
@@ -199,7 +208,10 @@ mod tests {
         let frame = b"radio link is up";
         let fragments = f.fragment(frame);
         assert!(fragments.len() > 1, "frame should have split");
-        assert_eq!(reassemble(&fragments, 0..fragments.len()).as_deref(), Some(&frame[..]));
+        assert_eq!(
+            reassemble(&fragments, 0..fragments.len()).as_deref(),
+            Some(&frame[..])
+        );
     }
 
     #[test]
@@ -224,7 +236,10 @@ mod tests {
         let frame = b"abcdefg";
         let fragments = f.fragment(frame);
         let reversed = (0..fragments.len()).rev();
-        assert_eq!(reassemble(&fragments, reversed).as_deref(), Some(&frame[..]));
+        assert_eq!(
+            reassemble(&fragments, reversed).as_deref(),
+            Some(&frame[..])
+        );
     }
 
     #[test]
