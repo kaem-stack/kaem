@@ -9,7 +9,7 @@
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use kaem_transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError};
 
 /// Largest UDP payload (theoretical max for an IPv4 datagram).
 const MAX_DATAGRAM: usize = 65_507;

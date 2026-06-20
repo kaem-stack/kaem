@@ -7,18 +7,14 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-# the transport port + its adapters
-kaem-transport = { path = "crates/kaem-transport" }
-kaem-radio = { path = "crates/kaem-radio" }
-kaem-udp = { path = "crates/kaem-udp" }
-kaem-loopback = { path = "crates/kaem-loopback" }
+# the link layer — the transport port + every link implementation
+kaem-link = { path = "crates/kaem-link" }
 # application
 kaem-codec = { path = "crates/kaem-codec" }
 kaem-crypto = { path = "crates/kaem-crypto" }
 kaem-node = { path = "crates/kaem-node" }
 kaem-pairing = { path = "crates/kaem-pairing" }
 kaem-mesh = { path = "crates/kaem-mesh" }
-kaem-sim = { path = "crates/kaem-sim" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"

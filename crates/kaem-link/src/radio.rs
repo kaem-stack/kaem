@@ -1,22 +1,17 @@
 //! Radio transport — RF over the air, implemented as a software-defined radio.
 //!
 //! This adapter is the real radio signal path: a frame is FSK-modulated into
-//! baseband IQ samples by the [`modem`], then those samples are carried to the
-//! peer by a [`Channel`](channel::Channel). Today the channel is UDP (simulated
-//! airwaves); swap in a SoapySDR-backed channel and the same modem drives real
-//! hardware — the [`Transport`] interface never notices.
-
-mod channel;
-mod modem;
+//! baseband IQ samples by the [`modem`](crate::modem), then those samples are
+//! carried to the peer by a [`Channel`](crate::channel::Channel). Today the
+//! channel is UDP (simulated airwaves); swap in a SoapySDR-backed channel and
+//! the same modem drives real hardware — the [`Transport`] interface never
+//! notices.
 
 use std::net::SocketAddr;
 
-use kaem_transport::{Transport, TransportError};
-
-pub use channel::Channel;
-use channel::UdpChannel;
-use modem::Modem;
-pub use modem::{Iq, ModemParams};
+use crate::channel::{Channel, UdpChannel};
+use crate::modem::{Modem, ModemParams};
+use crate::transport::{Transport, TransportError};
 
 pub struct RadioTransport {
     modem: Modem,

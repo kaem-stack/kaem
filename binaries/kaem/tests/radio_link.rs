@@ -6,8 +6,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use kaem_codec::{WireMessage, decode, encode};
-use kaem_radio::RadioTransport;
-use kaem_transport::Transport;
+use kaem_link::{RadioTransport, Transport};
 
 #[test]
 fn message_flows_through_the_radio_transport() {

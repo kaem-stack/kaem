@@ -6,7 +6,7 @@ mod tui;
 use std::net::SocketAddr;
 
 use color_eyre::Result;
-use kaem_transport::Transport;
+use kaem_link::Transport;
 
 use crate::app::App;
 
@@ -74,9 +74,9 @@ impl Settings {
     /// dependency in `Cargo.toml` — nothing else in the workspace changes.
     fn open(&self) -> Result<Box<dyn Transport>> {
         Ok(match self.backend {
-            Backend::Loopback => Box::new(kaem_loopback::Loopback::new()),
-            Backend::Udp => Box::new(kaem_udp::UdpTransport::bind(self.bind, self.peer)?),
-            Backend::Radio => Box::new(kaem_radio::RadioTransport::bind(self.bind, self.peer)?),
+            Backend::Loopback => Box::new(kaem_link::Loopback::new()),
+            Backend::Udp => Box::new(kaem_link::UdpTransport::bind(self.bind, self.peer)?),
+            Backend::Radio => Box::new(kaem_link::RadioTransport::bind(self.bind, self.peer)?),
         })
     }
 }

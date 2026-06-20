@@ -6,9 +6,7 @@ edition.workspace = true
 [dependencies]
 kaem-node.workspace = true
 kaem-mesh.workspace = true
-kaem-sim.workspace = true
-kaem-radio.workspace = true
-kaem-transport.workspace = true
+kaem-link.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rand.workspace = true

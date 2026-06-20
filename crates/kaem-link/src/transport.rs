@@ -1,13 +1,9 @@
-//! The transport port — the single interface every kaem link speaks.
+//! The transport port — the single interface every link speaks.
 //!
-//! This crate defines *what* a transport must do — move opaque byte frames
-//! between nodes — and says nothing about *how*. Each medium (UDP, WiFi, SDR,
-//! in-process loopback) lives in its own crate that depends on this one and
-//! implements [`Transport`].
-//!
-//! Crucially, this crate depends on **nothing** and knows none of its
-//! implementors. Selecting a concrete transport is the job of the composition
-//! root (the CLI), which is the only place that links the adapters together.
+//! Defines *what* a transport must do — move opaque byte frames between nodes —
+//! and says nothing about *how*. Each medium in this crate (the radio, raw UDP,
+//! in-process loopback) implements [`Transport`]; selecting which one to build
+//! is left to the binary that composes the link.
 
 /// A bidirectional link that moves opaque byte frames between nodes.
 ///

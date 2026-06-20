@@ -4,12 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-kaem-transport.workspace = true
+kaem-link.workspace = true
 kaem-codec.workspace = true
 kaem-node.workspace = true
-kaem-radio.workspace = true
-kaem-udp.workspace = true
-kaem-loopback.workspace = true
 chrono.workspace = true
 color-eyre.workspace = true
 crossterm.workspace = true

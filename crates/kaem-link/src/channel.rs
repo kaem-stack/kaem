@@ -11,9 +11,8 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 
-use kaem_transport::TransportError;
-
 use crate::modem::Iq;
+use crate::transport::TransportError;
 
 /// Carries one burst of baseband IQ samples between nodes.
 pub trait Channel {

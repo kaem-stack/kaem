@@ -1,7 +1,7 @@
 use tui_input::Input;
 
+use kaem_link::Transport;
 use kaem_node::{Command, Contact, Node};
-use kaem_transport::Transport;
 
 /// The view-layer wrapper around the steppable [`Node`] core. It holds the UI
 /// state that has no place in the domain (which contact is open, the
@@ -109,7 +109,7 @@ mod tests {
     fn empty_contacts_never_panics() {
         let mut chat = Chat::new(
             Vec::new(),
-            Box::new(kaem_loopback::Loopback::new()),
+            Box::new(kaem_link::Loopback::new()),
             "me".into(),
         );
         assert!(chat.selected_contact().is_none());

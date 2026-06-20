@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
 
-use kaem_transport::Transport;
+use kaem_link::Transport;
 
 use crate::action::Action;
 use crate::core::chat::Chat;
@@ -55,7 +55,7 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        let transport = Box::new(kaem_loopback::Loopback::new());
+        let transport = Box::new(kaem_link::Loopback::new());
         Self::new(transport, "me".into())
     }
 }

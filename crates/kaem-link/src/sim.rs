@@ -1,8 +1,8 @@
-//! An in-process RF medium: it carries the same [`kaem_radio`] baseband IQ
-//! samples the real link does, but between in-memory nodes instead of over a
-//! UDP socket. Nodes are positioned in a 2D field, and a burst is delivered to
-//! every other node within `range`, each independently subject to Bernoulli
-//! `loss`.
+//! An in-process RF medium: it carries the same baseband IQ samples the real
+//! [`RadioTransport`](crate::RadioTransport) link does, but between in-memory
+//! nodes instead of over a UDP socket. Nodes are positioned in a 2D field, and
+//! a burst is delivered to every other node within `range`, each independently
+//! subject to Bernoulli `loss`.
 //!
 //! It knows nothing of what those samples carry — chat, pairing, anything —
 //! only positions and IQ. Deliberately single-threaded: callers drive every
@@ -14,11 +14,13 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
 
-use kaem_radio::{Channel, Iq};
-use kaem_transport::TransportError;
 use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+
+use crate::channel::Channel;
+use crate::modem::Iq;
+use crate::transport::TransportError;
 
 /// A node's location in the simulated field, in arbitrary distance units
 /// (meters, conceptually).
@@ -175,7 +177,7 @@ fn within_range(a: Pos, b: Pos, range: f32) -> bool {
 }
 
 /// A [`Channel`] backed by the in-process [`Medium`] instead of a UDP socket
-/// — so the exact same [`kaem_radio`] modem runs over the simulated field.
+/// — so the exact same [`modem`](crate::modem) runs over the simulated field.
 pub struct SimChannel {
     id: NodeId,
     medium: Rc<RefCell<Medium>>,

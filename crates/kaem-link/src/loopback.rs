@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use kaem_transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError};
 
 pub struct Loopback {
     inbox: VecDeque<Vec<u8>>,

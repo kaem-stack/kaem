@@ -1,9 +1,0 @@
-[package]
-name = "kaem-sim"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-kaem-radio.workspace = true
-kaem-transport.workspace = true
-rand.workspace = true
