@@ -16,6 +16,9 @@
 //! `crc16` is CRC-16/CCITT-FALSE over every preceding byte.
 
 mod crc;
+pub mod envelope;
+
+pub use envelope::{Envelope, decode_envelope, encode_envelope};
 
 const MAGIC: [u8; 2] = *b"KM";
 const VERSION: u8 = 1;
