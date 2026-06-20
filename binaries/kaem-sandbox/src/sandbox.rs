@@ -53,6 +53,18 @@ pub struct Pulse {
     pub frame: Rc<Vec<u8>>,
 }
 
+/// A directional hop marker: one transmit, from one origin toward one
+/// specific in-range neighbor, animated as a point sliding along that
+/// segment. Emitted alongside the expanding-ring `Pulse` so a multi-hop flood
+/// relay reads on the canvas as a chain of directional hops, each one
+/// originating from whichever node relayed it.
+pub struct Hop {
+    pub from: Pos,
+    pub to: Pos,
+    pub start: u64,
+    pub frame: Rc<Vec<u8>>,
+}
+
 pub struct Sandbox {
     pub medium: Rc<RefCell<Medium>>,
     pub nodes: Vec<SimNode>,
@@ -60,6 +72,7 @@ pub struct Sandbox {
     pub dt: u64,
     pub running: bool,
     pub pulses: Vec<Pulse>,
+    pub hops: Vec<Hop>,
     pub cursor: Pos,
 }
 
@@ -78,6 +91,7 @@ impl Sandbox {
             dt: DT,
             running: true,
             pulses: Vec::new(),
+            hops: Vec::new(),
             cursor: Pos {
                 x: FIELD / 2.0,
                 y: FIELD / 2.0,
@@ -143,34 +157,41 @@ impl Sandbox {
     /// 3. garbage-collect pulses that have outgrown the medium's range.
     pub fn step(&mut self) {
         self.clock += self.dt;
+        let now = self.clock;
 
-        for node in &mut self.nodes {
-            let mut relays = Vec::new();
+        for idx in 0..self.nodes.len() {
+            let mut relays: Vec<Vec<u8>> = Vec::new();
+            let node = &mut self.nodes[idx];
             while let Ok(Some(frame)) = node.transport.recv() {
                 let inbound = node.mesh.on_frame(&frame);
                 // Decrypted payload (if any) folds into this node's chat
                 // history; the relay (if any) is rebroadcast below.
                 if let Some(payload) = inbound.payload {
-                    node.chat.on_frame(&payload, self.clock);
+                    node.chat.on_frame(&payload, now);
                 }
                 if let Some(relay) = inbound.relay {
                     relays.push(relay);
                 }
             }
             for relay in relays {
+                let node = &mut self.nodes[idx];
                 let _ = node.transport.send(&relay);
+                let origin = node.pos;
+                let frame = Rc::new(relay);
                 self.pulses.push(Pulse {
-                    origin: node.pos,
-                    start: self.clock,
-                    frame: Rc::new(relay),
+                    origin,
+                    start: now,
+                    frame: frame.clone(),
                 });
+                self.push_hops(idx, origin, now, frame);
             }
         }
 
         let range = self.medium.borrow().range();
-        let now = self.clock;
         self.pulses
             .retain(|p| (now.saturating_sub(p.start) as f32) * crate::field::WAVE_SPEED <= range);
+        self.hops
+            .retain(|h| now.saturating_sub(h.start) <= hop_duration(h.from, h.to));
     }
 
     /// Send a console message from the node at `idx` to `to` immediately:
@@ -197,18 +218,46 @@ impl Sandbox {
             now,
         );
         let mut transmitted = false;
+        let mut sealed_envelopes: Vec<Vec<u8>> = Vec::new();
         for frame in frames {
             if let Some(envelope) = node.mesh.seal(to, &frame.0) {
                 let _ = node.transport.send(&envelope);
-                self.pulses.push(Pulse {
-                    origin: node.pos,
-                    start: now,
-                    frame: Rc::new(envelope),
-                });
-                transmitted = true;
+                sealed_envelopes.push(envelope);
             }
         }
+        for envelope in sealed_envelopes {
+            let origin = self.nodes[idx].pos;
+            let frame = Rc::new(envelope);
+            self.pulses.push(Pulse {
+                origin,
+                start: now,
+                frame: frame.clone(),
+            });
+            self.push_hops(idx, origin, now, frame);
+            transmitted = true;
+        }
         transmitted
+    }
+
+    /// Push one directional [`Hop`] from `origin` toward every other
+    /// registered node currently within the medium's range — the per-segment
+    /// animation that makes a flood relay read as a chain of hops rather
+    /// than one undirected ring.
+    fn push_hops(&mut self, from_idx: usize, origin: Pos, now: u64, frame: Rc<Vec<u8>>) {
+        let range = self.medium.borrow().range();
+        for (j, other) in self.nodes.iter().enumerate() {
+            if j == from_idx {
+                continue;
+            }
+            if within_range(origin, other.pos, range) {
+                self.hops.push(Hop {
+                    from: origin,
+                    to: other.pos,
+                    start: now,
+                    frame: frame.clone(),
+                });
+            }
+        }
     }
 
     /// Pair the nodes at `a_idx` and `b_idx`: exchange identity public keys
@@ -258,6 +307,39 @@ impl Default for Sandbox {
     }
 }
 
+/// Whether `a` and `b` are within `range` field units of each other —
+/// shared by `push_hops` (deciding which neighbors get a directional hop)
+/// and tests.
+fn within_range(a: Pos, b: Pos, range: f32) -> bool {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    (dx * dx + dy * dy).sqrt() <= range
+}
+
+/// How many virtual milliseconds a [`Hop`] from `from` to `to` takes to
+/// animate across, at [`crate::field::WAVE_SPEED`] field-units-per-ms — the
+/// same speed the expanding-ring `Pulse` uses, so a hop marker arrives at
+/// its destination exactly when the ring passes through it.
+fn hop_duration(from: Pos, to: Pos) -> u64 {
+    let dx = from.x - to.x;
+    let dy = from.y - to.y;
+    let distance = (dx * dx + dy * dy).sqrt();
+    (distance / crate::field::WAVE_SPEED) as u64
+}
+
+/// How far along [0.0, 1.0] a hop's marker has travelled from `hop.from`
+/// toward `hop.to` at virtual time `now` — used by the canvas to place the
+/// sliding marker. Clamped to `1.0` so a hop pending GC this same tick still
+/// renders at its destination rather than overshooting.
+pub fn hop_progress(hop: &Hop, now: u64) -> f32 {
+    let duration = hop_duration(hop.from, hop.to);
+    if duration == 0 {
+        return 1.0;
+    }
+    let elapsed = now.saturating_sub(hop.start);
+    (elapsed as f32 / duration as f32).min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +355,7 @@ mod tests {
             dt: DT,
             running: true,
             pulses: Vec::new(),
+            hops: Vec::new(),
             cursor: Pos { x: 0.0, y: 0.0 },
         }
     }
@@ -354,5 +437,60 @@ mod tests {
             sandbox.step();
         }
         assert!(sandbox.pulses.is_empty());
+    }
+
+    #[test]
+    fn send_pushes_one_hop_per_in_range_neighbor() {
+        let mut sandbox = empty();
+        let idx = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        let _out_of_range = sandbox.add_node(Pos { x: 90.0, y: 90.0 });
+        sandbox.pair(idx, peer);
+        let peer_name = sandbox.nodes[peer].name.clone();
+
+        sandbox.send_from(idx, &peer_name, "hi".to_string());
+
+        // Only the in-range peer gets a hop; the far node doesn't.
+        assert_eq!(sandbox.hops.len(), 1);
+        assert_eq!(sandbox.hops[0].from, sandbox.nodes[idx].pos);
+        assert_eq!(sandbox.hops[0].to, sandbox.nodes[peer].pos);
+    }
+
+    #[test]
+    fn hops_are_gced_once_their_duration_elapses() {
+        let mut sandbox = empty();
+        let idx = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        sandbox.pair(idx, peer);
+        let peer_name = sandbox.nodes[peer].name.clone();
+        sandbox.send_from(idx, &peer_name, "hi".to_string());
+        assert_eq!(sandbox.hops.len(), 1);
+
+        for _ in 0..2000 {
+            sandbox.step();
+        }
+        assert!(sandbox.hops.is_empty());
+    }
+
+    #[test]
+    fn within_range_matches_actual_distance() {
+        assert!(within_range(
+            Pos { x: 0.0, y: 0.0 },
+            Pos { x: 10.0, y: 0.0 },
+            35.0
+        ));
+        assert!(!within_range(
+            Pos { x: 0.0, y: 0.0 },
+            Pos { x: 90.0, y: 90.0 },
+            35.0
+        ));
+    }
+
+    #[test]
+    fn hop_duration_scales_with_distance_and_wave_speed() {
+        let from = Pos { x: 0.0, y: 0.0 };
+        let to = Pos { x: 10.0, y: 0.0 };
+        let expected = (10.0 / crate::field::WAVE_SPEED) as u64;
+        assert_eq!(hop_duration(from, to), expected);
     }
 }

@@ -150,6 +150,7 @@ impl SandboxApp {
                 medium: &medium,
                 nodes: &canvas_nodes,
                 pulses: &self.sandbox.pulses,
+                hops: &self.sandbox.hops,
                 now: self.sandbox.clock,
                 cursor: self.sandbox.cursor,
             };

@@ -10,19 +10,20 @@ use egui::{Align2, FontId, Painter, Rect, Response, Sense, Stroke, Ui};
 use kaem_sim::{Medium, Pos};
 
 use crate::field::{WAVE_SPEED, field_radius_to_screen, field_to_screen, screen_to_field};
-use crate::sandbox::Pulse;
+use crate::sandbox::{Hop, Pulse, hop_progress};
 use crate::theme;
 
 /// How close (in field units) a click or drag-start must land to a node to
 /// hit it instead of the bare field.
 pub const HIT_THRESHOLD: f32 = 6.0;
 
-/// How close (in screen pixels) a click must land to a pulse ring to hit it
-/// for the packet inspector.
+/// How close (in screen pixels) a click must land to a pulse ring or hop
+/// marker to hit it for the packet inspector.
 const FRAME_HIT_RADIUS_PX: f32 = 8.0;
 
 const NODE_RADIUS: f32 = 5.0;
 const CURSOR_RADIUS: f32 = 3.0;
+const HOP_MARKER_RADIUS: f32 = 3.0;
 const RANGE_STROKE_ALPHA: u8 = 50;
 
 /// A labeled node drawn on the canvas.
@@ -36,9 +37,9 @@ pub struct CanvasNode<'a> {
 pub enum CanvasClick {
     Node(usize),
     Field(Pos),
-    /// A pulse ring was clicked — the packet inspector decodes and shows
-    /// this frame. `Rc` makes this cheap to carry out of the canvas and
-    /// stash as `app.rs`'s "currently inspected" state.
+    /// A pulse ring or hop marker was clicked — the packet inspector decodes
+    /// and shows this frame. `Rc` makes this cheap to carry out of the
+    /// canvas and stash as `app.rs`'s "currently inspected" state.
     Frame(Rc<Vec<u8>>),
 }
 
@@ -56,6 +57,7 @@ pub struct Canvas<'a> {
     pub medium: &'a Medium,
     pub nodes: &'a [CanvasNode<'a>],
     pub pulses: &'a [Pulse],
+    pub hops: &'a [Hop],
     pub now: u64,
     pub cursor: Pos,
 }
@@ -86,6 +88,7 @@ impl Canvas<'_> {
         self.draw_range_circles(&painter, inner);
         self.draw_links(&painter, inner);
         self.draw_waves(&painter, inner);
+        self.draw_hops(&painter, inner);
         self.draw_nodes(&painter, inner);
         self.draw_cursor(&painter, inner);
 
@@ -112,10 +115,10 @@ impl Canvas<'_> {
         }
     }
 
-    /// Hit-test `point` (screen space) against every visible pulse ring,
-    /// returning the first frame whose ring the click landed on, within
-    /// [`FRAME_HIT_RADIUS_PX`] — the packet-inspector entry point from the
-    /// canvas.
+    /// Hit-test `point` (screen space) against every visible pulse ring and
+    /// hop marker, returning the first frame whose drawn shape the click
+    /// landed on, within [`FRAME_HIT_RADIUS_PX`] — the packet-inspector
+    /// entry point from the canvas.
     fn hit_test_frames(&self, inner: Rect, point: egui::Pos2) -> Option<Rc<Vec<u8>>> {
         let range = self.medium.range();
         for pulse in self.pulses {
@@ -129,6 +132,14 @@ impl Canvas<'_> {
             let dist = (point - center).length();
             if (dist - screen_radius).abs() <= FRAME_HIT_RADIUS_PX {
                 return Some(pulse.frame.clone());
+            }
+        }
+        for hop in self.hops {
+            let progress = hop_progress(hop, self.now);
+            let marker = lerp_pos(hop.from, hop.to, progress);
+            let center = field_to_screen(inner, marker);
+            if (point - center).length() <= FRAME_HIT_RADIUS_PX {
+                return Some(hop.frame.clone());
             }
         }
         None
@@ -175,6 +186,19 @@ impl Canvas<'_> {
         }
     }
 
+    /// Draw each directional [`Hop`] as a marker sliding from `hop.from`
+    /// toward `hop.to`, parameterized by [`hop_progress`]. Drawn alongside
+    /// the expanding-ring `draw_waves`: rings read as range-wide
+    /// propagation, these markers as the specific multi-hop relay path.
+    fn draw_hops(&self, painter: &Painter, inner: Rect) {
+        for hop in self.hops {
+            let progress = hop_progress(hop, self.now);
+            let marker = lerp_pos(hop.from, hop.to, progress);
+            let center = field_to_screen(inner, marker);
+            painter.circle_filled(center, HOP_MARKER_RADIUS, theme::ME);
+        }
+    }
+
     fn draw_nodes(&self, painter: &Painter, inner: Rect) {
         for node in self.nodes {
             let center = field_to_screen(inner, node.pos);
@@ -218,4 +242,12 @@ fn distance_sq(a: Pos, b: Pos) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
+}
+
+/// Linear interpolation between two field positions at `t` in `[0.0, 1.0]`.
+fn lerp_pos(from: Pos, to: Pos, t: f32) -> Pos {
+    Pos {
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+    }
 }
