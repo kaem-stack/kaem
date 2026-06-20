@@ -10,7 +10,7 @@ use egui::{Align2, FontId, Painter, Rect, Response, Sense, Stroke, Ui};
 use kaem_sim::{Medium, Pos};
 
 use crate::field::{
-    FIELD, View, WAVE_SPEED, field_radius_to_screen, field_to_screen, screen_to_field,
+    FIELD, View, WAVE_SPEED, field_radius_to_screen, field_to_screen, scale, screen_to_field,
 };
 use crate::sandbox::{Hop, Pulse, hop_progress};
 use crate::theme;
@@ -28,13 +28,14 @@ const CURSOR_RADIUS: f32 = 3.0;
 const HOP_MARKER_RADIUS: f32 = 3.0;
 const RANGE_STROKE_ALPHA: u8 = 50;
 
-/// Grid line spacing in field units (meters) — graph-paper backdrop for the
-/// canvas, the brutalist "protocol sandbox" tell rather than a blank dark
-/// panel. Every line is labeled in meters so the field reads as a real
-/// distance map, not an abstract coordinate space.
-const GRID_SPACING: f32 = 10.0;
+/// Target on-screen spacing (pixels) between grid lines — [`grid_spacing`]
+/// picks the field-unit step whose rendered spacing lands closest to this, so
+/// the graph-paper backdrop redraws at a coarser or finer scale as the
+/// operator zooms in/out instead of the lines bunching up or thinning out.
+const GRID_TARGET_PX: f32 = 56.0;
 const GRID_ALPHA: u8 = 28;
 const GRID_LABEL_ALPHA: u8 = 110;
+const GRID_HINT_ALPHA: u8 = 160;
 
 /// A labeled node drawn on the canvas.
 pub struct CanvasNode<'a> {
@@ -161,15 +162,18 @@ impl Canvas<'_> {
         None
     }
 
-    /// Graph-paper grid across the whole field, at [`GRID_SPACING`] meters,
-    /// labeled along the top and left edges — drawn first so every other
-    /// layer sits on top of it.
+    /// Graph-paper grid across the whole field, spaced by [`grid_spacing`]
+    /// for the current zoom, labeled along the top and left edges — drawn
+    /// first so every other layer sits on top of it. A small hint in the
+    /// canvas's bottom-right corner spells out the current spacing, since the
+    /// grid resizing as the operator zooms is otherwise easy to miss.
     fn draw_grid(&self, painter: &Painter, inner: Rect) {
         let stroke = Stroke::new(1.0, theme::with_alpha(theme::BORDER, GRID_ALPHA));
         let label_color = theme::with_alpha(theme::META, GRID_LABEL_ALPHA);
-        let steps = (FIELD / GRID_SPACING).round() as i32;
+        let spacing = grid_spacing(scale(inner, self.view).unwrap_or(1.0));
+        let steps = (FIELD / spacing).round() as i32;
         for i in 0..=steps {
-            let coord = i as f32 * GRID_SPACING;
+            let coord = i as f32 * spacing;
             let top = field_to_screen(inner, Pos { x: coord, y: 0.0 }, self.view);
             let bottom = field_to_screen(inner, Pos { x: coord, y: FIELD }, self.view);
             painter.line_segment([top, bottom], stroke);
@@ -197,12 +201,24 @@ impl Canvas<'_> {
                 );
             }
         }
+
+        painter.text(
+            inner.right_bottom() + egui::vec2(-4.0, -3.0),
+            Align2::RIGHT_BOTTOM,
+            format!("grid: {spacing:.0}m"),
+            FontId::monospace(10.0),
+            theme::with_alpha(theme::META, GRID_HINT_ALPHA),
+        );
     }
 
+    /// Range circles only for the emphasized nodes (selected, or with an open
+    /// chat) — drawing one per node turns into visual noise once the field
+    /// holds more than a handful, and the operator only cares about the
+    /// reach of whichever node(s) they're currently focused on.
     fn draw_range_circles(&self, painter: &Painter, inner: Rect) {
         let range = self.medium.range();
         let screen_radius = field_radius_to_screen(inner, range, self.view);
-        for node in self.nodes {
+        for node in self.nodes.iter().filter(|n| n.emphasized) {
             let center = field_to_screen(inner, node.pos, self.view);
             painter.circle_stroke(
                 center,
@@ -299,6 +315,30 @@ fn distance_sq(a: Pos, b: Pos) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
+}
+
+/// Pick a grid line spacing, in field units (meters), whose on-screen
+/// spacing at `px_per_meter` lands closest to [`GRID_TARGET_PX`] — snapped to
+/// a "nice" 1/2/5 step (..., 1, 2, 5, 10, 20, 50, 100, ...) the way a ruler or
+/// graph paper would, rather than an arbitrary fraction of a meter.
+fn grid_spacing(px_per_meter: f32) -> f32 {
+    if px_per_meter <= 0.0 {
+        return FIELD;
+    }
+    let raw = GRID_TARGET_PX / px_per_meter;
+    let exponent = raw.log10().floor();
+    let base = 10f32.powf(exponent);
+    let mantissa = raw / base;
+    let nice = if mantissa < 1.5 {
+        1.0
+    } else if mantissa < 3.5 {
+        2.0
+    } else if mantissa < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * base
 }
 
 /// Linear interpolation between two field positions at `t` in `[0.0, 1.0]`.

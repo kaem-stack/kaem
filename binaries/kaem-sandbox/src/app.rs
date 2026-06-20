@@ -50,6 +50,11 @@ pub struct SandboxApp {
 
 impl SandboxApp {
     pub fn new(cc: &CreationContext<'_>) -> Self {
+        // Lock the theme to dark regardless of OS preference — the
+        // brutalist palette only reads correctly in dark mode, and an
+        // automatic light-mode switch (e.g. system theme change) would
+        // otherwise fight the colors `theme::style()` sets below.
+        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
         cc.egui_ctx.set_global_style(theme::style());
         let sandbox = Sandbox::new();
         let chats = sandbox.nodes.iter().map(|_| ChatState::default()).collect();

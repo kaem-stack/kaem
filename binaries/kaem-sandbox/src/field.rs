@@ -108,6 +108,14 @@ pub fn screen_to_field(inner: Rect, point: Pos2, view: View) -> Pos {
     }
 }
 
+/// The field-units-to-pixels scale for `inner` under `view` — what one meter
+/// measures in screen pixels. Exposed so callers like the grid renderer can
+/// pick a line spacing that reads well at the current zoom, without
+/// duplicating [`Projection`]'s letterboxed-fit math.
+pub fn scale(inner: Rect, view: View) -> Option<f32> {
+    Projection::for_rect(inner, view).map(|p| p.scale)
+}
+
 /// Convert a radius in field units (meters) to a radius in screen pixels for
 /// `inner` under `view`, using the exact same scale [`field_to_screen`]
 /// uses — so a range circle drawn with this radius always lands precisely
