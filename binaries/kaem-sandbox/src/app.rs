@@ -15,6 +15,7 @@ use crate::sandbox::Sandbox;
 use crate::theme;
 use crate::ui::chat::{self, ChatState};
 use crate::ui::field::{self, Canvas, CanvasClick, CanvasNode};
+use crate::ui::log::render_log_panel;
 
 const CURSOR_STEP: f32 = 2.0;
 
@@ -66,6 +67,7 @@ impl eframe::App for SandboxApp {
 
         self.top_bar(ui);
         self.bottom_bar(ui);
+        render_log_panel(ui, &self.sandbox, &mut self.inspecting);
         self.central_canvas(ui);
         self.chat_windows(ui.ctx());
         self.pairing_dialog(ui.ctx());

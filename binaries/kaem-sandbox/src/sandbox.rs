@@ -22,6 +22,10 @@ const DEFAULT_RANGE: f32 = 35.0;
 const DEFAULT_LOSS: f32 = 0.0;
 const DEFAULT_SEED: u64 = 1;
 
+/// Bound on event-log growth — old entries are evicted FIFO once exceeded,
+/// so a long-running sandbox session doesn't grow the log unboundedly.
+const EVENT_LOG_CAPACITY: usize = 500;
+
 const NAMES: &[&str] = &[
     "alice", "bob", "carol", "dave", "erin", "frank", "grace", "heidi",
 ];
@@ -74,6 +78,33 @@ pub struct Hop {
     pub frame: Rc<Vec<u8>>,
 }
 
+/// One entry in the sandbox-wide chronological event log — independent of
+/// any per-node chat history, so it reads as a wire-level trace
+/// cross-referenceable against the packet inspector via `message_id`.
+pub struct LogEntry {
+    pub clock: u64,
+    pub node: String,
+    pub action: EventKind,
+    pub frame: Rc<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Sent,
+    Relayed,
+    Received,
+}
+
+impl EventKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            EventKind::Sent => "sent",
+            EventKind::Relayed => "relayed",
+            EventKind::Received => "received",
+        }
+    }
+}
+
 pub struct Sandbox {
     pub medium: Rc<RefCell<Medium>>,
     pub nodes: Vec<SimNode>,
@@ -82,6 +113,7 @@ pub struct Sandbox {
     pub running: bool,
     pub pulses: Vec<Pulse>,
     pub hops: Vec<Hop>,
+    pub log: Vec<LogEntry>,
     pub cursor: Pos,
 }
 
@@ -101,6 +133,7 @@ impl Sandbox {
             running: true,
             pulses: Vec::new(),
             hops: Vec::new(),
+            log: Vec::new(),
             cursor: Pos {
                 x: FIELD / 2.0,
                 y: FIELD / 2.0,
@@ -171,7 +204,7 @@ impl Sandbox {
 
         for idx in 0..self.nodes.len() {
             let mut relays: Vec<Vec<u8>> = Vec::new();
-            let mut received = 0u64;
+            let mut received: Vec<Rc<Vec<u8>>> = Vec::new();
             let node = &mut self.nodes[idx];
             while let Ok(Some(frame)) = node.transport.recv() {
                 let inbound = node.mesh.on_frame(&frame);
@@ -179,25 +212,33 @@ impl Sandbox {
                 // history; the relay (if any) is rebroadcast below.
                 if let Some(payload) = inbound.payload {
                     node.chat.on_frame(&payload, now);
-                    received += 1;
+                    received.push(Rc::new(frame));
                 }
                 if let Some(relay) = inbound.relay {
                     relays.push(relay);
                 }
             }
-            self.nodes[idx].stats.received += received;
+            if !received.is_empty() {
+                self.nodes[idx].stats.received += received.len() as u64;
+                let name = self.nodes[idx].name.clone();
+                for frame in received {
+                    self.push_log(now, name.clone(), EventKind::Received, frame);
+                }
+            }
             for relay in relays {
                 let node = &mut self.nodes[idx];
                 let _ = node.transport.send(&relay);
                 node.stats.relayed += 1;
                 let origin = node.pos;
+                let name = node.name.clone();
                 let frame = Rc::new(relay);
                 self.pulses.push(Pulse {
                     origin,
                     start: now,
                     frame: frame.clone(),
                 });
-                self.push_hops(idx, origin, now, frame);
+                self.push_hops(idx, origin, now, frame.clone());
+                self.push_log(now, name, EventKind::Relayed, frame);
             }
         }
 
@@ -242,13 +283,15 @@ impl Sandbox {
         for envelope in sealed_envelopes {
             self.nodes[idx].stats.sent += 1;
             let origin = self.nodes[idx].pos;
+            let name = self.nodes[idx].name.clone();
             let frame = Rc::new(envelope);
             self.pulses.push(Pulse {
                 origin,
                 start: now,
                 frame: frame.clone(),
             });
-            self.push_hops(idx, origin, now, frame);
+            self.push_hops(idx, origin, now, frame.clone());
+            self.push_log(now, name, EventKind::Sent, frame);
             transmitted = true;
         }
         transmitted
@@ -273,6 +316,20 @@ impl Sandbox {
                 });
             }
         }
+    }
+
+    /// Append to the event log, evicting the oldest entry once
+    /// [`EVENT_LOG_CAPACITY`] is exceeded.
+    fn push_log(&mut self, clock: u64, node: String, action: EventKind, frame: Rc<Vec<u8>>) {
+        if self.log.len() >= EVENT_LOG_CAPACITY {
+            self.log.remove(0);
+        }
+        self.log.push(LogEntry {
+            clock,
+            node,
+            action,
+            frame,
+        });
     }
 
     /// Pair the nodes at `a_idx` and `b_idx`: exchange identity public keys
@@ -371,6 +428,7 @@ mod tests {
             running: true,
             pulses: Vec::new(),
             hops: Vec::new(),
+            log: Vec::new(),
             cursor: Pos { x: 0.0, y: 0.0 },
         }
     }
@@ -524,5 +582,35 @@ mod tests {
         let to = Pos { x: 10.0, y: 0.0 };
         let expected = (10.0 / crate::field::WAVE_SPEED) as u64;
         assert_eq!(hop_duration(from, to), expected);
+    }
+
+    #[test]
+    fn send_records_a_log_entry() {
+        let mut sandbox = empty();
+        let idx = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        sandbox.pair(idx, peer);
+        let peer_name = sandbox.nodes[peer].name.clone();
+
+        sandbox.send_from(idx, &peer_name, "hi".to_string());
+
+        assert_eq!(sandbox.log.len(), 1);
+        assert!(matches!(sandbox.log[0].action, EventKind::Sent));
+        assert_eq!(sandbox.log[0].node, sandbox.nodes[idx].name);
+    }
+
+    #[test]
+    fn event_log_evicts_oldest_once_over_capacity() {
+        let mut sandbox = empty();
+        let idx = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        sandbox.pair(idx, peer);
+        let peer_name = sandbox.nodes[peer].name.clone();
+
+        for i in 0..(EVENT_LOG_CAPACITY + 10) {
+            sandbox.send_from(idx, &peer_name, format!("msg {i}"));
+        }
+
+        assert_eq!(sandbox.log.len(), EVENT_LOG_CAPACITY);
     }
 }
