@@ -14,8 +14,8 @@ SDR hardware later. No radio hardware is required to run or develop it.
 ```bash
 cargo build                         # build the whole workspace
 cargo test                          # all tests, all crates
-cargo test -p kaem-link             # one crate's tests
-cargo test -p kaem-link message_survives_the_modulated_link    # a single test
+cargo test -p kaem-modem            # one crate's tests
+cargo test -p kaem-radio-pipeline message_survives_the_modulated_link    # a single test
 cargo clippy --all-targets          # lint — keep this clean (edition-2024 let-chains in use)
 cargo fmt                           # format
 ```
@@ -32,7 +32,9 @@ KAEM_NODE=b cargo run -p kaem       # bob,   binds 7002 -> 7001
 ```
 
 - `KAEM_TRANSPORT` = `radio` (default) | `udp` | `loopback`
-  - `radio` — full signal path: FSK-modulate -> IQ over `UdpChannel` -> demodulate -> CRC.
+  - `radio` — full signal path: the orchestrator's `RadioPipeline` runs
+    fragment -> FSK-modulate -> IQ over `UdpChannel`, and the reverse
+    (demodulate -> CRC -> reassemble) on receive.
   - `udp` — raw byte frames in datagrams; skips the modem (fast, for layers above the modem).
   - `loopback` — in-process echo; no peer, no socket (run solo).
 - `KAEM_NODE` = `a` | `b` — presets bind/peer ports and callsign. **Does not pick the transport.**
@@ -40,23 +42,35 @@ KAEM_NODE=b cargo run -p kaem       # bob,   binds 7002 -> 7001
 
 ## Architecture
 
-A Cargo virtual workspace of five **independent, self-contained library
-crates** under `crates/` and two binaries under `binaries/`. Each library
+A Cargo virtual workspace of eight **independent, self-contained library
+crates** under `crates/` and three crates under `binaries/`. Each library
 crate has **zero dependencies on any other `kaem` crate** — they are parts of
 one protocol, decoupled on purpose so any of them can later become its own
-binary/process. Only the binaries depend on the crates, and a binary is the
-only place that composes them — including injecting one crate's behavior into
-another via a trait the *consuming* crate owns (see `CryptoOps` below), never
-by one crate naming another in its `Cargo.toml`.
+binary/process. Each crate is a **pure capability that does exactly one job
+and never calls another crate**; the binary is the **orchestrator** that calls
+them in sequence (on receive: `channel -> modem -> fragment -> mesh/crypto ->
+node`; on send, the reverse). There is no composition/"glue" type inside any
+library crate — composition lives only in a binary, including injecting one
+crate's behavior into another via a trait the *consuming* crate owns (see
+`CryptoOps` and `Channel` below), never by one crate naming another in its
+`Cargo.toml`.
 
 ```
-crates/                            binaries/
-  kaem-link    the link layer        kaem          (TUI chat)  -> link + node
-  kaem-sim     the RF simulation      kaem-sandbox  (egui sim)  -> link + sim + node + mesh + crypto
-  kaem-node    the chat core
-  kaem-mesh    the encrypted mesh
-  kaem-crypto  crypto primitives
+crates/  (one job each, zero kaem deps)    binaries/  (orchestrators)
+  kaem-modem    bytes <-> IQ (the codec)     kaem                 (TUI chat)
+  kaem-fragment frame <-> MTU fragments       kaem-sandbox         (egui sim)
+  kaem-channel  IQ over a medium              kaem-radio-pipeline  (shared radio
+  kaem-link     the Transport port                                  composition lib)
+  kaem-sim      the RF simulation
+  kaem-node     the chat core
+  kaem-mesh     the encrypted mesh
+  kaem-crypto   crypto primitives
 ```
+
+(`kaem-radio-pipeline` lives under `binaries/` but is a library, not a runnable
+binary: it's binary-side composition code shared by the two real binaries, so
+it's allowed to depend on several capability crates — the invariant only
+governs `crates/*`.)
 
 This is the non-negotiable invariant: **no `crates/*` crate may depend on
 another `crates/*` crate, under any profile, including `dev-dependencies`.**
@@ -65,42 +79,56 @@ framing + CRC, or its own small trait for a capability it needs but doesn't
 own the implementation of), and anything that needs to cross a crate boundary
 does so as bytes or a binary-supplied trait object, wired by a binary.
 
-### `kaem-link` — the link layer
+### `kaem-link` — the Transport port
 
-Everything that moves opaque byte frames between nodes, behind one port:
+The contract every link speaks, plus the non-radio dev links:
 
 - `Transport { send, recv }` + `TransportError` — the port every link speaks;
   `recv` is non-blocking (`Ok(None)` when nothing is ready). The trait lives
-  here and is re-exported; a binary picks which impl to build.
-- `RadioTransport` — the real RF signal chain in software, in three seams:
-  1. `fragment` — message fragmentation to the over-the-air MTU. `Fragmenter`
-     splits a whole frame into ordered, `msg_id`/`total`/`index`-tagged pieces;
-     `Reassembler` rebuilds it, tolerating out-of-order and duplicate delivery.
-     This sits above the modem, so the chat/mesh layers keep handing whole
-     frames down and never learn the air has a size limit. Best-effort to match
-     the link: a dropped fragment leaves its message incomplete, and the
-     reassembler bounds half-assembled messages by count (no clock needed, so
-     `Transport`'s non-blocking contract holds). MTU is a `RadioTransport`
-     construction parameter (`with_mtu`).
-  2. `modem` — a binary-FSK software modem. `modulate` turns a (fragment) byte
-     frame into a framed bitstream (preamble, sync word, len, payload, crc16)
-     then complex baseband `Iq` samples; `demodulate` recovers the bytes via a
-     quadrature frequency discriminator. A frame that fails CRC is dropped like
-     line noise — so a corrupted fragment never reaches the reassembler.
-  3. `channel` — `trait Channel { transmit, receive, local_addr }`, the seam
-     between DSP and the radio. `UdpChannel` carries IQ bursts over UDP (the
-     simulated airwaves), fragmenting/reassembling bursts larger than one
-     datagram (a separate, IQ-level concern from the message fragmentation
-     above). A real SDR (SoapySDR/HackRF/Pluto) is just another `Channel`;
-     the modem and `Transport` above it never change. `RadioTransport` holds a
-     `Box<dyn Channel>`, so it's channel-generic.
-- `UdpTransport` / `Loopback` — dev scaffolding that skips the modem: raw
-  datagrams, and in-process echo for running solo.
+  here and is re-exported; a binary picks/builds which impl to use.
+- `UdpTransport` / `Loopback` — dev scaffolding that skips the modem entirely
+  (raw datagrams, and in-process echo for running solo), behind the
+  `dev-transports` cargo feature (off by default; the `kaem` binary enables it,
+  `kaem-sandbox` does not). They are full `Transport` impls, not part of the
+  radio signal chain.
 
-**To add a link:** add a `Transport` impl inside `kaem-link` (plus a `Channel`
-impl if it's another radio front-end) and one match arm in the binary's
-`Settings::open()`. Iteration on the radio (swap the modem or channel) stays
-inside `kaem-link`.
+`kaem-link` owns no DSP and no radio composition — the modem, fragmentation,
+and channel each live in their own crate (below), and the radio signal chain is
+assembled by an orchestrator (`RadioPipeline`, see composition roots).
+
+### `kaem-modem` — the FSK codec (bytes <-> IQ)
+
+A binary-FSK software modem, pure DSP with no I/O. `modulate` turns a byte
+frame into a framed bitstream (preamble, sync word, len, payload, crc16) then
+complex baseband `Iq` samples; `demodulate` recovers the bytes via a quadrature
+frequency discriminator. A frame that fails CRC is dropped like line noise — so
+a corrupted fragment never reaches the reassembler. Carries its own `Iq` type.
+
+### `kaem-fragment` — message fragmentation
+
+`Fragmenter` splits a whole frame into ordered, `msg_id`/`total`/`index`-tagged
+pieces sized to the over-the-air MTU; `Reassembler` rebuilds it, tolerating
+out-of-order and duplicate delivery. Sits above the modem, so the chat/mesh
+layers keep handing whole frames down and never learn the air has a size limit.
+Best-effort to match the link: a dropped fragment leaves its message
+incomplete, and the reassembler bounds half-assembled messages by count (no
+clock needed). Pure logic, no I/O.
+
+### `kaem-channel` — IQ over a medium
+
+`trait Channel { transmit, receive, local_addr }` + `ChannelError`, the seam
+between DSP and the radio. `UdpChannel` carries IQ bursts over UDP (the
+simulated airwaves), fragmenting/reassembling bursts larger than one datagram
+(a separate, IQ-level concern from the message fragmentation above). A real SDR
+(SoapySDR/HackRF/Pluto) is just another `Channel`. Carries its own `Iq` type,
+independent of `kaem-modem`'s — the orchestrator converts between them at the
+boundary (the same way `kaem-sim` keeps its own `Iq`).
+
+**To add a radio front-end:** add a `Channel` impl (in `kaem-channel` or its own
+crate) and wire it into the `RadioPipeline` the orchestrator builds — no
+`crates/*` crate changes to compose it. **To add a non-radio link:** add a
+`Transport` impl in `kaem-link` and one match arm in the binary's
+`Settings::open()`.
 
 ### `kaem-sim` — the in-process RF simulation
 
@@ -108,9 +136,10 @@ inside `kaem-link`.
 samples between in-memory nodes positioned in 2D, each delivery subject to a
 seeded Bernoulli loss. Single-threaded by design (`Rc<RefCell<_>>`), so the
 sandbox's `step` mode is exactly reproducible. It knows nothing of
-`kaem-link`'s `Channel` trait or `Iq` type — `kaem-sandbox`'s
-`SimChannelAdapter` is what implements `Channel` over a `Medium`, converting
-between the two crates' independent `Iq` types at the boundary.
+`kaem-channel`'s `Channel` trait or `Iq` type — `kaem-sandbox`'s
+`SimChannelAdapter` is what implements `kaem-channel`'s `Channel` over a
+`Medium`, converting between the two crates' independent `Iq` types at the
+boundary.
 
 ### `kaem-node` — the chat core
 
@@ -136,16 +165,18 @@ chat, and never names `kaem-crypto` (not even in `[dev-dependencies]` — its
 own tests duplicate a minimal crypto backend rather than import one, the same
 way wire framing is duplicated rather than shared). Every crypto operation it
 needs goes through `CryptoOps`, a trait it defines and takes as
-`Box<dyn CryptoOps>` at construction — the same trait-injection shape
-`kaem-link` uses for `Channel`. It also owns the identity + chatroom `Store`
-(sqlite, in-memory for now), the pairing handshake, and the
-`Envelope { chatroom_id, message_id, ttl, ciphertext }` frame (magic `KE`,
-distinct from `KM` so the two can never be confused while decoding).
+`Box<dyn CryptoOps>` at construction — the same trait-injection shape used for
+`Channel`. The chatroom `Store` (sqlite) is likewise injected via a
+`ChatroomStore` trait the crate defines (the concrete sqlite `Store` lives in
+`pairing::store`, in-memory for now). It also owns the identity + pairing
+handshake and the `Envelope { chatroom_id, message_id, ttl, ciphertext }` frame
+(magic `KE`, distinct from `KM` so the two can never be confused while
+decoding).
 
 `MeshNode` exposes:
-- `new(crypto: Box<dyn CryptoOps>)` — a binary supplies the crypto backend
-  (typically `kaem-crypto` wrapped in an adapter); this crate never depends on
-  one directly.
+- `new(crypto: Box<dyn CryptoOps>, store: Box<dyn ChatroomStore>)` — a binary
+  supplies the crypto backend (typically `kaem-crypto` wrapped in an adapter)
+  and the store; this crate never depends on either implementation directly.
 - `begin_pairing` / `finish_pairing` — mint/recover a shared chatroom key via a
   real KEM encapsulation (through `crypto`).
 - `seal(to, payload) -> Option<Vec<u8>>` — seal opaque bytes for a paired peer
@@ -156,20 +187,31 @@ distinct from `KM` so the two can never be confused while decoding).
 
 ### Composition roots (the binaries)
 
-- `binaries/kaem` — the CLI/TUI chat binary; wires `kaem-link` + `kaem-node`.
-  `Settings::open()` in `main.rs` is the factory that maps `KAEM_TRANSPORT` to a
-  concrete link and hands the chat domain a `Box<dyn Transport>`. The chat
-  domain (`core/chat.rs`) wraps `Node` plus UI-only state (open contact, input
-  buffer); the UI is ratatui (`tui/`), one `Widget` per panel. UI tick:
-  `chat.poll()` drains frames, draw, then one input action.
+- `binaries/kaem-radio-pipeline` — the radio signal chain as an orchestrator,
+  not a library capability. `RadioPipeline` implements `Transport` by composing
+  `kaem-fragment` + `kaem-modem` + a `Box<dyn kaem_channel::Channel>`: `send`
+  runs fragment -> modulate -> `channel.transmit`; `recv` runs
+  `channel.receive` -> demodulate (drop on CRC fail) -> reassemble. It is the
+  `kaem_modem::Iq` <-> `kaem_channel::Iq` conversion boundary. MTU is a
+  construction parameter (`with_mtu`). Shared by both real binaries so the glue
+  lives once; depends on several capability crates because it is composition
+  code, not a protocol crate.
+- `binaries/kaem` — the CLI/TUI chat binary; wires `kaem-link` + `kaem-node` +
+  `kaem-radio-pipeline`. `Settings::open()` in `main.rs` is the factory that
+  maps `KAEM_TRANSPORT` to a concrete `Box<dyn Transport>` (`radio` builds a
+  `RadioPipeline` over a `UdpChannel`; `udp`/`loopback` are the dev transports).
+  The chat domain (`core/chat.rs`) wraps `Node` plus UI-only state (open
+  contact, input buffer); the UI is ratatui (`tui/`), one `Widget` per panel.
+  UI tick: `chat.poll()` drains frames, draw, then one input action.
 - `binaries/kaem-sandbox` — the Packet Tracer-style operator console (egui);
-  wires all five crates. Each node owns a `Node` (chat) alongside a `MeshNode`
-  (crypto), both over a `RadioTransport`. The binary builds `KaemCrypto`
-  (`CryptoOps` over `kaem-crypto`) and `SimChannelAdapter` (`Channel` over a
-  shared `kaem-sim::Medium`) and hands both in — neither library crate knows
-  the other exists. Sending runs `node.command -> mesh.seal -> link`;
-  receiving runs `mesh.on_frame -> node.on_frame` (the chat layer drops own
-  echoes). See `docs/SANDBOX_PLAN.md`.
+  wires every crate. Each node owns a `Node` (chat) alongside a `MeshNode`
+  (crypto), both over a `RadioPipeline`. The binary builds `KaemCrypto`
+  (`CryptoOps` over `kaem-crypto`), an in-memory `ChatroomStore`, and
+  `SimChannelAdapter` (`kaem-channel`'s `Channel` over a shared
+  `kaem-sim::Medium`) and hands them in — no library crate knows the others
+  exist. Sending runs `node.command -> mesh.seal -> link`; receiving runs
+  `mesh.on_frame -> node.on_frame` (the chat layer drops own echoes). See
+  `docs/SANDBOX_PLAN.md`.
 
 ## Conventions
 
@@ -207,10 +249,15 @@ distinct from `KM` so the two can never be confused while decoding).
 sandbox that spawns many nodes in one process, simulating the RF medium
 in-process instead of over real UDP/SDR. That landed, and the library crates
 were then consolidated into three self-contained, mutually-independent crates
-(`kaem-link`, `kaem-node`, `kaem-mesh`), then further decoupled into the five
-above by pulling `kaem-sim` out of `kaem-link` and `kaem-crypto` out of
-`kaem-mesh` — each behind a trait-injection seam a binary wires, so any crate
-can later become its own binary/process without another crate ever naming it.
-Treat that doc as the historical map of the sandbox work; the `Architecture`
-section above is the source of truth for the current layout and is kept in
-sync with whatever has actually landed.
+(`kaem-link`, `kaem-node`, `kaem-mesh`), then decoupled into five by pulling
+`kaem-sim` out of `kaem-link` and `kaem-crypto` out of `kaem-mesh`, and then
+`kaem-link` itself was split into the pure capability crates `kaem-modem` /
+`kaem-fragment` / `kaem-channel` (with `RadioTransport` dissolved into the
+orchestrator's `RadioPipeline`). The end goal: every capability crate becomes
+its own binary/process in a Linux distro, with the orchestrator calling them in
+a pipeline (over IPC once they are separate processes) — so no crate may ever
+name another. `kaem-mesh` is the next god-crate to decompose the same way
+(relay vs. pairing/identity/store). Treat `docs/SANDBOX_PLAN.md` as the
+historical map of the sandbox work; the `Architecture` section above is the
+source of truth for the current layout and is kept in sync with whatever has
+actually landed.
