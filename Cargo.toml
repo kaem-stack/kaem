@@ -12,6 +12,8 @@ kaem-link = { path = "crates/kaem-link" }
 # application
 kaem-node = { path = "crates/kaem-node" }
 kaem-mesh = { path = "crates/kaem-mesh" }
+# crypto primitives
+kaem-crypto = { path = "crates/kaem-crypto" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"

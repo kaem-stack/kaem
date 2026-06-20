@@ -2308,6 +2308,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaem-crypto"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "getrandom 0.4.3",
+ "ml-kem",
+ "rand 0.10.1",
+ "zeroize",
+]
+
+[[package]]
 name = "kaem-link"
 version = "0.1.0"
 dependencies = [
@@ -2319,12 +2331,9 @@ name = "kaem-mesh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chacha20poly1305",
- "getrandom 0.4.3",
- "ml-kem",
+ "kaem-crypto",
  "rand 0.10.1",
  "rusqlite",
- "zeroize",
 ]
 
 [[package]]
@@ -2335,8 +2344,10 @@ version = "0.1.0"
 name = "kaem-sandbox"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "eframe",
  "egui",
+ "kaem-crypto",
  "kaem-link",
  "kaem-mesh",
  "kaem-node",
