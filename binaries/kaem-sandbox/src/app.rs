@@ -107,14 +107,6 @@ impl SandboxApp {
                 {
                     self.sandbox.medium.borrow_mut().set_range(range);
                 }
-
-                let mut loss = self.sandbox.medium.borrow().loss();
-                if ui
-                    .add(egui::Slider::new(&mut loss, 0.0..=1.0).text("loss"))
-                    .changed()
-                {
-                    self.sandbox.medium.borrow_mut().set_loss(loss);
-                }
             });
         });
     }
