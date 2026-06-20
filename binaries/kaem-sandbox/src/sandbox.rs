@@ -212,6 +212,20 @@ impl Sandbox {
         self.medium.borrow_mut().set_position(node.id, pos);
     }
 
+    /// Remove the node at `idx`, unregistering it from the shared [`Medium`]
+    /// too so it stops being a reachability candidate for everyone else. A
+    /// no-op if `idx` is out of range. Indices above `idx` shift down by
+    /// one, same as any `Vec::remove` — callers that keep their own
+    /// per-node state in lockstep (e.g. `app.rs`'s `chats`) must remove the
+    /// matching entry too.
+    pub fn remove_node(&mut self, idx: usize) {
+        if idx >= self.nodes.len() {
+            return;
+        }
+        let node = self.nodes.remove(idx);
+        self.medium.borrow_mut().remove(node.id);
+    }
+
     /// Advance the simulation by exactly one tick:
     /// 1. advance the clock,
     /// 2. drain each node's transport into `on_frame`, retransmitting any
@@ -688,5 +702,29 @@ mod tests {
         }
 
         assert_eq!(sandbox.log.len(), EVENT_LOG_CAPACITY);
+    }
+
+    #[test]
+    fn remove_node_drops_it_and_unregisters_from_medium() {
+        let mut sandbox = empty();
+        let a = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let b = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        assert_eq!(sandbox.nodes.len(), 2);
+
+        sandbox.remove_node(a);
+
+        assert_eq!(sandbox.nodes.len(), 1);
+        // The remaining node has shifted down to index 0 and is the one
+        // that used to be at `b`.
+        assert_eq!(sandbox.nodes[0].pos, Pos { x: 10.0, y: 0.0 });
+        let _ = b;
+    }
+
+    #[test]
+    fn remove_node_out_of_range_is_a_no_op() {
+        let mut sandbox = empty();
+        sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        sandbox.remove_node(5);
+        assert_eq!(sandbox.nodes.len(), 1);
     }
 }

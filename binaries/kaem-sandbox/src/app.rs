@@ -33,6 +33,11 @@ pub struct SandboxApp {
     pairing_b: Option<usize>,
     /// The node currently being dragged on the canvas, if any.
     dragging: Option<usize>,
+    /// In-progress drag-rectangle multi-select: the screen-space anchor
+    /// point the drag started from. `None` when not selecting.
+    select_anchor: Option<egui::Pos2>,
+    /// Indices of nodes currently selected via the drag-rectangle.
+    selected: Vec<usize>,
     /// The frame currently shown in the packet inspector, if any.
     inspecting: Option<Rc<Vec<u8>>>,
 }
@@ -49,6 +54,8 @@ impl SandboxApp {
             pairing_a: None,
             pairing_b: None,
             dragging: None,
+            select_anchor: None,
+            selected: Vec::new(),
             inspecting: None,
         }
     }
@@ -136,8 +143,51 @@ impl SandboxApp {
                         self.sandbox.speed = preset;
                     }
                 }
+
+                if !self.selected.is_empty() {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("{} selected", self.selected.len()))
+                            .color(theme::META),
+                    );
+                    if ui.button("pair selected").clicked() {
+                        self.pair_selected();
+                    }
+                    if ui.button("remove selected").clicked() {
+                        self.remove_selected();
+                    }
+                    if ui.button("clear selection").clicked() {
+                        self.selected.clear();
+                    }
+                }
             });
         });
+    }
+
+    /// Pairwise-pair every currently selected node with every other selected
+    /// node.
+    fn pair_selected(&mut self) {
+        for i in 0..self.selected.len() {
+            for j in (i + 1)..self.selected.len() {
+                self.sandbox.pair(self.selected[i], self.selected[j]);
+            }
+        }
+    }
+
+    /// Remove every currently selected node from the sandbox, highest index
+    /// first so earlier indices in `self.selected` stay valid as we go.
+    /// Keeps `chats` in lockstep.
+    fn remove_selected(&mut self) {
+        let mut indices = self.selected.clone();
+        indices.sort_unstable();
+        indices.dedup();
+        for idx in indices.into_iter().rev() {
+            self.sandbox.remove_node(idx);
+            if idx < self.chats.len() {
+                self.chats.remove(idx);
+            }
+        }
+        self.selected.clear();
     }
 
     fn bottom_bar(&self, ui: &mut Ui) {
@@ -148,7 +198,7 @@ impl SandboxApp {
                 ui.separator();
                 ui.label(RichText::new(format!("[{state}]")).color(theme::META));
                 ui.separator();
-                let hint = "click a node to open its chat; click a wave to inspect; click empty field to move cursor";
+                let hint = "click a node to open its chat; drag empty field to select; click a wave/hop to inspect";
                 ui.label(RichText::new(hint).color(theme::META));
             });
         });
@@ -164,7 +214,8 @@ impl SandboxApp {
                 .map(|(i, n)| CanvasNode {
                     name: &n.name,
                     pos: n.pos,
-                    emphasized: self.chats.get(i).is_some_and(|c| c.open),
+                    emphasized: self.chats.get(i).is_some_and(|c| c.open)
+                        || self.selected.contains(&i),
                 })
                 .collect();
 
@@ -183,11 +234,17 @@ impl SandboxApp {
             let pointer = output.response.interact_pointer_pos();
 
             if self.dragging.is_none()
+                && self.select_anchor.is_none()
                 && output.response.drag_started()
                 && let Some(point) = pointer
             {
                 let pos = screen_to_field(output.inner, point);
                 self.dragging = field::nearest_node(&canvas_nodes, pos, field::HIT_THRESHOLD);
+                if self.dragging.is_none() {
+                    // Drag started on bare field — begin a multi-select
+                    // rectangle instead of moving a node.
+                    self.select_anchor = Some(point);
+                }
             }
 
             if let Some(idx) = self.dragging {
@@ -198,6 +255,30 @@ impl SandboxApp {
                 if output.response.drag_stopped() {
                     self.dragging = None;
                 }
+            } else if let Some(anchor) = self.select_anchor {
+                if let Some(point) = pointer {
+                    let rect = egui::Rect::from_two_pos(anchor, point);
+                    output.response.ctx.debug_painter().rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(1.0, theme::ME),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if output.response.drag_stopped() {
+                    if let Some(point) = pointer {
+                        let rect = egui::Rect::from_two_pos(anchor, point);
+                        self.selected = canvas_nodes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, n)| {
+                                rect.contains(crate::field::field_to_screen(output.inner, n.pos))
+                            })
+                            .map(|(i, _)| i)
+                            .collect();
+                    }
+                    self.select_anchor = None;
+                }
             } else {
                 match output.click {
                     Some(CanvasClick::Node(idx)) => {
@@ -207,6 +288,7 @@ impl SandboxApp {
                     }
                     Some(CanvasClick::Field(pos)) => {
                         self.sandbox.cursor = pos;
+                        self.selected.clear();
                     }
                     Some(CanvasClick::Frame(frame)) => {
                         self.inspecting = Some(frame);
