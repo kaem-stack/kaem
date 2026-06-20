@@ -1,14 +1,16 @@
 //! The `eframe::App` implementation: owns the `Sandbox` engine plus the
 //! UI-only state the engine doesn't need to know about (per-node chat window
-//! state, the add-node range/loss controls), and drives one `step()` per
-//! frame while running.
+//! state, the add-node range control, the packet inspector), and drives one
+//! `step()` per frame while running.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use eframe::CreationContext;
 use egui::{Context, RichText, Ui};
 
 use crate::field::screen_to_field;
+use crate::frame_info::{self, DecodedFrame};
 use crate::sandbox::Sandbox;
 use crate::theme;
 use crate::ui::chat::{self, ChatState};
@@ -27,6 +29,8 @@ pub struct SandboxApp {
     pairing_b: Option<usize>,
     /// The node currently being dragged on the canvas, if any.
     dragging: Option<usize>,
+    /// The frame currently shown in the packet inspector, if any.
+    inspecting: Option<Rc<Vec<u8>>>,
 }
 
 impl SandboxApp {
@@ -41,6 +45,7 @@ impl SandboxApp {
             pairing_a: None,
             pairing_b: None,
             dragging: None,
+            inspecting: None,
         }
     }
 
@@ -64,6 +69,7 @@ impl eframe::App for SandboxApp {
         self.central_canvas(ui);
         self.chat_windows(ui.ctx());
         self.pairing_dialog(ui.ctx());
+        self.packet_inspector(ui.ctx());
     }
 }
 
@@ -119,7 +125,7 @@ impl SandboxApp {
                 ui.separator();
                 ui.label(RichText::new(format!("[{state}]")).color(theme::META));
                 ui.separator();
-                let hint = "click a node to open its chat; click empty field to move cursor";
+                let hint = "click a node to open its chat; click a wave to inspect; click empty field to move cursor";
                 ui.label(RichText::new(hint).color(theme::META));
             });
         });
@@ -177,6 +183,9 @@ impl SandboxApp {
                     }
                     Some(CanvasClick::Field(pos)) => {
                         self.sandbox.cursor = pos;
+                    }
+                    Some(CanvasClick::Frame(frame)) => {
+                        self.inspecting = Some(frame);
                     }
                     None => {}
                 }
@@ -269,5 +278,51 @@ impl SandboxApp {
         idx.and_then(|i| self.sandbox.nodes.get(i))
             .map(|n| n.name.clone())
             .unwrap_or_else(|| "—".to_string())
+    }
+
+    /// A read-only window decoding `self.inspecting`'s frame via
+    /// `frame_info::decode_frame` — the packet inspector. Opened by clicking
+    /// a pulse ring; closing it just clears `inspecting`, no engine state
+    /// involved.
+    fn packet_inspector(&mut self, ctx: &Context) {
+        let Some(frame) = self.inspecting.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        egui::Window::new("packet inspector")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| match frame_info::decode_frame(&frame) {
+                DecodedFrame::Envelope {
+                    chatroom_id,
+                    message_id,
+                    ttl,
+                    ciphertext_len,
+                } => {
+                    ui.label(RichText::new("mesh envelope (KE)").color(theme::ME));
+                    ui.separator();
+                    ui.label(format!("chatroom_id: {chatroom_id}"));
+                    ui.label(format!("message_id:  {message_id}"));
+                    ui.label(format!("ttl:         {ttl}"));
+                    ui.label(format!("ciphertext:  {ciphertext_len} bytes (opaque)"));
+                }
+                DecodedFrame::Wire(message) => {
+                    ui.label(RichText::new("chat wire frame (KM)").color(theme::ME));
+                    ui.separator();
+                    ui.label(format!("from: {}", message.from));
+                    ui.label(format!("to:   {}", message.to));
+                    ui.label(format!("body: {}", message.body));
+                }
+                DecodedFrame::Unknown => {
+                    ui.label(RichText::new("unrecognized frame").color(theme::META));
+                    ui.label(format!("{} bytes", frame.len()));
+                }
+            });
+
+        if !open {
+            self.inspecting = None;
+        }
     }
 }

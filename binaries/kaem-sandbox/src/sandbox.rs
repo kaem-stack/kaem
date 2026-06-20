@@ -43,10 +43,14 @@ pub struct SimNode {
     pub transport: RadioTransport,
 }
 
-/// An expanding RF wave drawn from a transmit, for the canvas animation.
+/// An expanding RF wave drawn from a transmit, for the canvas animation. Each
+/// pulse carries the exact frame bytes that travelled the link, so the
+/// canvas's click-to-inspect can show the operator the real decoded fields
+/// rather than a placeholder.
 pub struct Pulse {
     pub origin: Pos,
     pub start: u64,
+    pub frame: Rc<Vec<u8>>,
 }
 
 pub struct Sandbox {
@@ -158,6 +162,7 @@ impl Sandbox {
                 self.pulses.push(Pulse {
                     origin: node.pos,
                     start: self.clock,
+                    frame: Rc::new(relay),
                 });
             }
         }
@@ -198,6 +203,7 @@ impl Sandbox {
                 self.pulses.push(Pulse {
                     origin: node.pos,
                     start: now,
+                    frame: Rc::new(envelope),
                 });
                 transmitted = true;
             }

@@ -3,6 +3,8 @@
 //! into either a "open this node's chat" or "move the cursor" action. Also
 //! reports raw drag info so `app.rs` can let the operator drag nodes around.
 
+use std::rc::Rc;
+
 use egui::{Align2, FontId, Painter, Rect, Response, Sense, Stroke, Ui};
 
 use kaem_sim::{Medium, Pos};
@@ -14,6 +16,10 @@ use crate::theme;
 /// How close (in field units) a click or drag-start must land to a node to
 /// hit it instead of the bare field.
 pub const HIT_THRESHOLD: f32 = 6.0;
+
+/// How close (in screen pixels) a click must land to a pulse ring to hit it
+/// for the packet inspector.
+const FRAME_HIT_RADIUS_PX: f32 = 8.0;
 
 const NODE_RADIUS: f32 = 5.0;
 const CURSOR_RADIUS: f32 = 3.0;
@@ -30,6 +36,10 @@ pub struct CanvasNode<'a> {
 pub enum CanvasClick {
     Node(usize),
     Field(Pos),
+    /// A pulse ring was clicked — the packet inspector decodes and shows
+    /// this frame. `Rc` makes this cheap to carry out of the canvas and
+    /// stash as `app.rs`'s "currently inspected" state.
+    Frame(Rc<Vec<u8>>),
 }
 
 /// Everything `app.rs` needs after a frame: the resolved click (if any) and
@@ -92,11 +102,36 @@ impl Canvas<'_> {
         if !response.clicked() {
             return None;
         }
+        if let Some(frame) = self.hit_test_frames(inner, point) {
+            return Some(CanvasClick::Frame(frame));
+        }
         let pos = screen_to_field(inner, point);
         match nearest_node(self.nodes, pos, HIT_THRESHOLD) {
             Some(idx) => Some(CanvasClick::Node(idx)),
             None => Some(CanvasClick::Field(pos)),
         }
+    }
+
+    /// Hit-test `point` (screen space) against every visible pulse ring,
+    /// returning the first frame whose ring the click landed on, within
+    /// [`FRAME_HIT_RADIUS_PX`] — the packet-inspector entry point from the
+    /// canvas.
+    fn hit_test_frames(&self, inner: Rect, point: egui::Pos2) -> Option<Rc<Vec<u8>>> {
+        let range = self.medium.range();
+        for pulse in self.pulses {
+            let age = self.now.saturating_sub(pulse.start) as f32;
+            let radius = age * WAVE_SPEED;
+            if radius <= 0.0 || radius > range {
+                continue;
+            }
+            let center = field_to_screen(inner, pulse.origin);
+            let screen_radius = field_radius_to_screen(inner, radius);
+            let dist = (point - center).length();
+            if (dist - screen_radius).abs() <= FRAME_HIT_RADIUS_PX {
+                return Some(pulse.frame.clone());
+            }
+        }
+        None
     }
 
     fn draw_range_circles(&self, painter: &Painter, inner: Rect) {

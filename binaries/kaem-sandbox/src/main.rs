@@ -1,6 +1,7 @@
 mod app;
 mod crypto_adapter;
 mod field;
+mod frame_info;
 mod sandbox;
 mod sim_adapter;
 mod theme;
