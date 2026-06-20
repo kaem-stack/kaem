@@ -40,24 +40,30 @@ KAEM_NODE=b cargo run -p kaem       # bob,   binds 7002 -> 7001
 
 ## Architecture
 
-A Cargo virtual workspace of three **independent, self-contained library
-crates** under `crates/` and two binaries under `binaries/`. Each library crate
-has **zero dependencies on any other `kaem` crate** — they are parts of one
-protocol, decoupled on purpose so any of them can later become its own
+A Cargo virtual workspace of five **independent, self-contained library
+crates** under `crates/` and two binaries under `binaries/`. Each library
+crate has **zero dependencies on any other `kaem` crate** — they are parts of
+one protocol, decoupled on purpose so any of them can later become its own
 binary/process. Only the binaries depend on the crates, and a binary is the
-only place that composes them.
+only place that composes them — including injecting one crate's behavior into
+another via a trait the *consuming* crate owns (see `CryptoOps` below), never
+by one crate naming another in its `Cargo.toml`.
 
 ```
 crates/                            binaries/
-  kaem-link   the link layer         kaem          (TUI chat)  -> link + node
-  kaem-node   the chat core          kaem-sandbox  (egui sim)  -> link + node + mesh
-  kaem-mesh   the encrypted mesh
+  kaem-link    the link layer        kaem          (TUI chat)  -> link + node
+  kaem-sim     the RF simulation      kaem-sandbox  (egui sim)  -> link + sim + node + mesh + crypto
+  kaem-node    the chat core
+  kaem-mesh    the encrypted mesh
+  kaem-crypto  crypto primitives
 ```
 
 This is the non-negotiable invariant: **no `crates/*` crate may depend on
-another `crates/*` crate.** Shared contracts live with whoever owns them (each
-crate carries its own framing + CRC), and anything that needs to cross a crate
-boundary does so as bytes, wired by a binary.
+another `crates/*` crate, under any profile, including `dev-dependencies`.**
+Shared contracts live with whoever owns them (each crate carries its own
+framing + CRC, or its own small trait for a capability it needs but doesn't
+own the implementation of), and anything that needs to cross a crate boundary
+does so as bytes or a binary-supplied trait object, wired by a binary.
 
 ### `kaem-link` — the link layer
 
@@ -74,14 +80,9 @@ Everything that moves opaque byte frames between nodes, behind one port:
   2. `channel` — `trait Channel { transmit, receive, local_addr }`, the seam
      between DSP and the radio. `UdpChannel` carries IQ bursts over UDP (the
      simulated airwaves), fragmenting/reassembling bursts larger than one
-     datagram; `SimChannel` carries the same samples across the in-process
-     `Medium`. A real SDR (SoapySDR/HackRF/Pluto) is just another `Channel`;
+     datagram. A real SDR (SoapySDR/HackRF/Pluto) is just another `Channel`;
      the modem and `Transport` above it never change. `RadioTransport` holds a
      `Box<dyn Channel>`, so it's channel-generic.
-- `Medium` + `SimChannel` — an in-process RF field carrying the same `Iq`
-  samples between in-memory nodes positioned in 2D, each delivery subject to a
-  seeded Bernoulli loss. Single-threaded by design (`Rc<RefCell<_>>`), so the
-  sandbox's `step` mode is exactly reproducible.
 - `UdpTransport` / `Loopback` — dev scaffolding that skips the modem: raw
   datagrams, and in-process echo for running solo.
 
@@ -89,6 +90,16 @@ Everything that moves opaque byte frames between nodes, behind one port:
 impl if it's another radio front-end) and one match arm in the binary's
 `Settings::open()`. Iteration on the radio (swap the modem or channel) stays
 inside `kaem-link`.
+
+### `kaem-sim` — the in-process RF simulation
+
+`Medium` + `NodeId` + `Pos` — an in-process RF field carrying its own `Iq`
+samples between in-memory nodes positioned in 2D, each delivery subject to a
+seeded Bernoulli loss. Single-threaded by design (`Rc<RefCell<_>>`), so the
+sandbox's `step` mode is exactly reproducible. It knows nothing of
+`kaem-link`'s `Channel` trait or `Iq` type — `kaem-sandbox`'s
+`SimChannelAdapter` is what implements `Channel` over a `Medium`, converting
+between the two crates' independent `Iq` types at the boundary.
 
 ### `kaem-node` — the chat core
 
@@ -99,19 +110,33 @@ its own chat wire protocol in `wire`: `WireMessage { from, to, body }` <-> a
 self-describing byte frame (magic `KM`, length-prefixed fields, CRC-16/CCITT).
 The same core drives the live TUI and the sandbox.
 
+### `kaem-crypto` — crypto primitives
+
+Pure keygen / hybrid KEM+AEAD encrypt-decrypt / direct symmetric seal-open
+functions (ML-KEM-768 + ChaCha20-Poly1305, behind a `Scheme` trait +
+`factory::create` dispatch so another algorithm can slot in later). No
+chatroom, identity, or relay concepts — it only turns keys and bytes into
+other bytes. Nothing in this crate's surface mentions `kaem-mesh`.
+
 ### `kaem-mesh` — the encrypted flood-relay mesh
 
-Chatroom pairing plus a **bytes-in/bytes-out** crypto relay — it knows nothing
-about chat. Internally it vendors the post-quantum crypto (ML-KEM-768 KEM +
-ChaCha20-Poly1305, a fresh key per message, each behind an algorithm trait +
-`factory::create` dispatch so another scheme can slot in), the identity +
-chatroom `Store` (sqlite, in-memory for now) and pairing handshake, and the
+Chatroom pairing plus a **bytes-in/bytes-out** relay — it knows nothing about
+chat, and never names `kaem-crypto` (not even in `[dev-dependencies]` — its
+own tests duplicate a minimal crypto backend rather than import one, the same
+way wire framing is duplicated rather than shared). Every crypto operation it
+needs goes through `CryptoOps`, a trait it defines and takes as
+`Box<dyn CryptoOps>` at construction — the same trait-injection shape
+`kaem-link` uses for `Channel`. It also owns the identity + chatroom `Store`
+(sqlite, in-memory for now), the pairing handshake, and the
 `Envelope { chatroom_id, message_id, ttl, ciphertext }` frame (magic `KE`,
 distinct from `KM` so the two can never be confused while decoding).
 
 `MeshNode` exposes:
+- `new(crypto: Box<dyn CryptoOps>)` — a binary supplies the crypto backend
+  (typically `kaem-crypto` wrapped in an adapter); this crate never depends on
+  one directly.
 - `begin_pairing` / `finish_pairing` — mint/recover a shared chatroom key via a
-  real KEM encapsulation.
+  real KEM encapsulation (through `crypto`).
 - `seal(to, payload) -> Option<Vec<u8>>` — seal opaque bytes for a paired peer
   into an envelope frame.
 - `on_frame(frame) -> Inbound { payload, relay }` — decrypt the payload if it's
@@ -127,10 +152,13 @@ distinct from `KM` so the two can never be confused while decoding).
   buffer); the UI is ratatui (`tui/`), one `Widget` per panel. UI tick:
   `chat.poll()` drains frames, draw, then one input action.
 - `binaries/kaem-sandbox` — the Packet Tracer-style operator console (egui);
-  wires all three crates. Each node owns a `Node` (chat) alongside a `MeshNode`
-  (crypto), both over a `RadioTransport` on a shared `Medium`. Sending runs
-  `node.command -> mesh.seal -> link`; receiving runs `mesh.on_frame ->
-  node.on_frame` (the chat layer drops own echoes). See `docs/SANDBOX_PLAN.md`.
+  wires all five crates. Each node owns a `Node` (chat) alongside a `MeshNode`
+  (crypto), both over a `RadioTransport`. The binary builds `KaemCrypto`
+  (`CryptoOps` over `kaem-crypto`) and `SimChannelAdapter` (`Channel` over a
+  shared `kaem-sim::Medium`) and hands both in — neither library crate knows
+  the other exists. Sending runs `node.command -> mesh.seal -> link`;
+  receiving runs `mesh.on_frame -> node.on_frame` (the chat layer drops own
+  echoes). See `docs/SANDBOX_PLAN.md`.
 
 ## Conventions
 
@@ -167,8 +195,11 @@ distinct from `KM` so the two can never be confused while decoding).
 `docs/SANDBOX_PLAN.md` describes the original effort: a Packet Tracer-style
 sandbox that spawns many nodes in one process, simulating the RF medium
 in-process instead of over real UDP/SDR. That landed, and the library crates
-were then consolidated into the three self-contained, mutually-independent
-crates above (`kaem-link`, `kaem-node`, `kaem-mesh`) so each can later become
-its own binary. Treat that doc as the historical map of the sandbox work; the
-`Architecture` section above is the source of truth for the current layout and
-is kept in sync with whatever has actually landed.
+were then consolidated into three self-contained, mutually-independent crates
+(`kaem-link`, `kaem-node`, `kaem-mesh`), then further decoupled into the five
+above by pulling `kaem-sim` out of `kaem-link` and `kaem-crypto` out of
+`kaem-mesh` — each behind a trait-injection seam a binary wires, so any crate
+can later become its own binary/process without another crate ever naming it.
+Treat that doc as the historical map of the sandbox work; the `Architecture`
+section above is the source of truth for the current layout and is kept in
+sync with whatever has actually landed.
