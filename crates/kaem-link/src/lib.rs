@@ -20,15 +20,19 @@
 
 mod channel;
 mod fragment;
+#[cfg(feature = "dev-transports")]
 mod loopback;
 mod modem;
 mod radio;
 mod transport;
+#[cfg(feature = "dev-transports")]
 mod udp;
 
 pub use channel::Channel;
+#[cfg(feature = "dev-transports")]
 pub use loopback::Loopback;
 pub use modem::{Iq, ModemParams};
 pub use radio::RadioTransport;
 pub use transport::{Transport, TransportError};
+#[cfg(feature = "dev-transports")]
 pub use udp::UdpTransport;

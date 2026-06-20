@@ -4,3 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+
+[features]
+# Development scaffolding (`UdpTransport`, `Loopback`) that skips the modem.
+# Not part of the production radio build surface — a binary that wants the
+# dev-only transports opts in explicitly.
+dev-transports = []
