@@ -25,8 +25,13 @@ pub use crypto_ops::{CryptoOps, KeyPair};
 use envelope::{Envelope, decode_envelope, encode_envelope};
 use pairing::{Chatroom, Identity, Store, generate_identity, handshake};
 
-/// Hop budget for a freshly sealed message.
-const DEFAULT_TTL: u8 = 8;
+/// Hop budget for a freshly sealed message. Effectively unbounded: dedup via
+/// `seen` (each node relays a given `message_id` at most once) already
+/// prevents relay loops/storms regardless of TTL, so the hop count itself
+/// shouldn't be the thing that lets a message die before it has reached
+/// every reachable node — `u8::MAX` hops is far beyond any mesh diameter
+/// this protocol will see.
+const DEFAULT_TTL: u8 = u8::MAX;
 
 /// How many recently relayed message ids to remember for dedup.
 const SEEN_CAPACITY: usize = 256;
