@@ -1,12 +1,13 @@
 //! The pairing handshake: mint a chatroom (id + symmetric key) and seal it
-//! for a specific peer's identity, using a real ML-KEM-768 encapsulation via
-//! [`crate::crypto`]. Whoever holds the matching secret key is the only one who
-//! can recover the chatroom id and key from the sealed bytes.
+//! for a specific peer's identity, using a real key-encapsulation via
+//! [`CryptoOps::hybrid_encrypt`]. Whoever holds the matching secret key is
+//! the only one who can recover the chatroom id and key from the sealed
+//! bytes.
 
 use anyhow::{Result, anyhow};
 
 use super::identity::Identity;
-use crate::crypto::{self, EncryptConfig};
+use crate::crypto_ops::CryptoOps;
 
 /// 8 bytes of chatroom id + 32 bytes of chatroom key.
 const PLAINTEXT_LEN: usize = 8 + 32;
@@ -16,7 +17,11 @@ const PLAINTEXT_LEN: usize = 8 + 32;
 /// caller inserts `(chatroom_id, key)` into its own [`super::Store`]
 /// immediately, and hands `sealed_for_peer` to the peer to recover the same
 /// pair via [`accept`].
-pub fn pair(local_identity: &Identity, peer_pubkey: &[u8]) -> Result<(u64, [u8; 32], Vec<u8>)> {
+pub fn pair(
+    crypto: &dyn CryptoOps,
+    local_identity: &Identity,
+    peer_pubkey: &[u8],
+) -> Result<(u64, [u8; 32], Vec<u8>)> {
     let _ = local_identity; // pairing only needs the peer's public key to seal
 
     let chatroom_id: u64 = rand::random();
@@ -27,26 +32,28 @@ pub fn pair(local_identity: &Identity, peer_pubkey: &[u8]) -> Result<(u64, [u8; 
     plaintext.extend_from_slice(&chatroom_id.to_be_bytes());
     plaintext.extend_from_slice(&key);
 
-    let cfg = EncryptConfig::default();
-    let sealed = crypto::encrypt(&cfg, peer_pubkey, &plaintext)?;
+    let sealed = crypto.hybrid_encrypt(peer_pubkey, &plaintext)?;
 
-    Ok((chatroom_id, key, sealed.ciphertext))
+    Ok((chatroom_id, key, sealed))
 }
 
 /// Recover the `(chatroom_id, key)` pair sealed by [`pair`], using
 /// `local_identity`'s secret key.
-pub fn accept(local_identity: &Identity, sealed: &[u8]) -> Result<(u64, [u8; 32])> {
-    let cfg = EncryptConfig::default();
-    let opened = crypto::decrypt(&cfg, &local_identity.secret_key, sealed)?;
+pub fn accept(
+    crypto: &dyn CryptoOps,
+    local_identity: &Identity,
+    sealed: &[u8],
+) -> Result<(u64, [u8; 32])> {
+    let plaintext = crypto.hybrid_decrypt(&local_identity.secret_key, sealed)?;
 
-    if opened.plaintext.len() != PLAINTEXT_LEN {
+    if plaintext.len() != PLAINTEXT_LEN {
         return Err(anyhow!(
             "unexpected pairing payload length: {} (expected {PLAINTEXT_LEN})",
-            opened.plaintext.len()
+            plaintext.len()
         ));
     }
 
-    let (id_bytes, key_bytes) = opened.plaintext.split_at(8);
+    let (id_bytes, key_bytes) = plaintext.split_at(8);
     let chatroom_id = u64::from_be_bytes(id_bytes.try_into().expect("split at 8"));
     let key: [u8; 32] = key_bytes.try_into().expect("split leaves 32 bytes");
 
@@ -57,16 +64,17 @@ pub fn accept(local_identity: &Identity, sealed: &[u8]) -> Result<(u64, [u8; 32]
 mod tests {
     use super::*;
     use crate::pairing::generate_identity;
+    use crate::test_support::TestCrypto;
 
     #[test]
     fn pair_and_accept_agree_on_chatroom_id_and_key() {
-        let alice = generate_identity().expect("alice identity");
-        let bob = generate_identity().expect("bob identity");
+        let alice = generate_identity(&TestCrypto).expect("alice identity");
+        let bob = generate_identity(&TestCrypto).expect("bob identity");
 
         let (chatroom_id, key, sealed) =
-            pair(&alice, &bob.public_key).expect("alice mints the chatroom");
+            pair(&TestCrypto, &alice, &bob.public_key).expect("alice mints the chatroom");
 
-        let (accepted_id, accepted_key) = accept(&bob, &sealed).expect("bob accepts");
+        let (accepted_id, accepted_key) = accept(&TestCrypto, &bob, &sealed).expect("bob accepts");
 
         assert_eq!(chatroom_id, accepted_id);
         assert_eq!(key, accepted_key);
@@ -74,12 +82,13 @@ mod tests {
 
     #[test]
     fn wrong_identity_cannot_accept() {
-        let alice = generate_identity().expect("alice identity");
-        let bob = generate_identity().expect("bob identity");
-        let mallory = generate_identity().expect("mallory identity");
+        let alice = generate_identity(&TestCrypto).expect("alice identity");
+        let bob = generate_identity(&TestCrypto).expect("bob identity");
+        let mallory = generate_identity(&TestCrypto).expect("mallory identity");
 
-        let (_, _, sealed) = pair(&alice, &bob.public_key).expect("alice mints the chatroom");
+        let (_, _, sealed) =
+            pair(&TestCrypto, &alice, &bob.public_key).expect("alice mints the chatroom");
 
-        assert!(accept(&mallory, &sealed).is_err());
+        assert!(accept(&TestCrypto, &mallory, &sealed).is_err());
     }
 }

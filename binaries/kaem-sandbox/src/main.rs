@@ -1,4 +1,5 @@
 mod app;
+mod crypto_adapter;
 mod field;
 mod sandbox;
 mod theme;

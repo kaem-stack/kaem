@@ -14,12 +14,13 @@
 
 use std::collections::{HashSet, VecDeque};
 
-mod crypto;
+mod crypto_ops;
 mod envelope;
-mod event;
-mod keys;
 mod pairing;
-mod symmetric;
+#[cfg(test)]
+mod test_support;
+
+pub use crypto_ops::{CryptoOps, KeyPair};
 
 use envelope::{Envelope, decode_envelope, encode_envelope};
 use pairing::{Chatroom, Identity, Store, generate_identity, handshake};
@@ -78,19 +79,26 @@ pub struct Inbound {
 }
 
 /// A node in the encrypted mesh: an identity keypair, the chatroom store that
-/// turns "stranger" into "paired peer", and a bounded relay-dedup set.
+/// turns "stranger" into "paired peer", a bounded relay-dedup set, and the
+/// crypto backend everything above is sealed with.
 pub struct MeshNode {
     identity: Identity,
     store: Store,
     seen: SeenIds,
+    crypto: Box<dyn CryptoOps>,
 }
 
 impl MeshNode {
-    pub fn new() -> Self {
+    /// Build a node backed by `crypto` for every keygen/seal/open it needs.
+    /// A binary supplies the implementation (typically backed by
+    /// `kaem-crypto`) — this crate never depends on one directly.
+    pub fn new(crypto: Box<dyn CryptoOps>) -> Self {
+        let identity = generate_identity(crypto.as_ref()).expect("keygen must succeed");
         Self {
-            identity: generate_identity().expect("ml-kem-768 keygen must succeed"),
+            identity,
             store: Store::open_in_memory().expect("in-memory sqlite must open"),
             seen: SeenIds::new(),
+            crypto,
         }
     }
 
@@ -114,7 +122,8 @@ impl MeshNode {
     /// callsign, and return the bytes sealed for the peer to recover the same
     /// chatroom via [`finish_pairing`](Self::finish_pairing).
     pub fn begin_pairing(&mut self, peer: &str, peer_pubkey: &[u8]) -> anyhow::Result<Vec<u8>> {
-        let (chatroom_id, key, sealed) = handshake::pair(&self.identity, peer_pubkey)?;
+        let (chatroom_id, key, sealed) =
+            handshake::pair(self.crypto.as_ref(), &self.identity, peer_pubkey)?;
         self.store.insert(&Chatroom {
             id: chatroom_id,
             peer: peer.to_string(),
@@ -127,7 +136,7 @@ impl MeshNode {
     /// [`begin_pairing`](Self::begin_pairing) call and insert it under `peer`'s
     /// callsign, completing the pairing.
     pub fn finish_pairing(&mut self, peer: &str, sealed: &[u8]) -> anyhow::Result<()> {
-        let (chatroom_id, key) = handshake::accept(&self.identity, sealed)?;
+        let (chatroom_id, key) = handshake::accept(self.crypto.as_ref(), &self.identity, sealed)?;
         self.store.insert(&Chatroom {
             id: chatroom_id,
             peer: peer.to_string(),
@@ -144,7 +153,7 @@ impl MeshNode {
             chatroom_id: chatroom.id,
             message_id: rand::random(),
             ttl: DEFAULT_TTL,
-            ciphertext: symmetric::seal(&chatroom.key, payload),
+            ciphertext: self.crypto.symmetric_seal(&chatroom.key, payload),
         };
         Some(encode_envelope(&envelope))
     }
@@ -181,13 +190,9 @@ impl MeshNode {
     /// ours or the ciphertext doesn't open under our key.
     fn try_open(&self, envelope: &Envelope) -> Option<Vec<u8>> {
         let chatroom = self.store.lookup(envelope.chatroom_id)?;
-        symmetric::open(&chatroom.key, &envelope.ciphertext).ok()
-    }
-}
-
-impl Default for MeshNode {
-    fn default() -> Self {
-        Self::new()
+        self.crypto
+            .symmetric_open(&chatroom.key, &envelope.ciphertext)
+            .ok()
     }
 }
 
@@ -203,14 +208,14 @@ mod tests {
 
     #[test]
     fn unpaired_seal_yields_nothing() {
-        let alice = MeshNode::new();
+        let alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         assert!(alice.seal("charlie", b"hi").is_none());
     }
 
     #[test]
     fn pairing_is_mutual() {
-        let mut alice = MeshNode::new();
-        let mut charlie = MeshNode::new();
+        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         assert!(alice.is_paired_with("charlie"));
@@ -220,8 +225,8 @@ mod tests {
 
     #[test]
     fn paired_peer_opens_what_we_seal() {
-        let mut alice = MeshNode::new();
-        let mut charlie = MeshNode::new();
+        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         let frame = alice
@@ -236,9 +241,9 @@ mod tests {
 
     #[test]
     fn relays_through_a_node_that_cannot_read_it() {
-        let mut alice = MeshNode::new();
-        let mut bob = MeshNode::new(); // never paired with anyone
-        let mut charlie = MeshNode::new();
+        let mut alice = MeshNode::new(Box::new(crate::test_support::TestCrypto));
+        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto)); // never paired with anyone
+        let mut charlie = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         pair(&mut alice, "alice", &mut charlie, "charlie");
 
         // alice -> charlie, but bob is the only one in range first.
@@ -258,7 +263,7 @@ mod tests {
 
     #[test]
     fn duplicate_envelope_is_relayed_only_once() {
-        let mut bob = MeshNode::new();
+        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 42,
@@ -272,7 +277,7 @@ mod tests {
 
     #[test]
     fn zero_ttl_envelope_is_not_relayed() {
-        let mut bob = MeshNode::new();
+        let mut bob = MeshNode::new(Box::new(crate::test_support::TestCrypto));
         let frame = encode_envelope(&Envelope {
             chatroom_id: 1,
             message_id: 7,

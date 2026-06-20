@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 kaem-node.workspace = true
 kaem-mesh.workspace = true
 kaem-link.workspace = true
+kaem-crypto.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rand.workspace = true

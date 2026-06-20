@@ -10,6 +10,7 @@ use kaem_link::{Medium, NodeId, Pos, RadioTransport, SimChannel, Transport};
 use kaem_mesh::MeshNode;
 use kaem_node::{Command, Node};
 
+use crate::crypto_adapter::KaemCrypto;
 use crate::field::FIELD;
 
 /// Virtual milliseconds per tick.
@@ -109,7 +110,7 @@ impl Sandbox {
             id,
             pos,
             chat,
-            mesh: MeshNode::new(),
+            mesh: MeshNode::new(Box::new(KaemCrypto)),
             transport,
         });
         self.nodes.len() - 1
