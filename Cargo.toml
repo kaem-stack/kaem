@@ -1,14 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-    "crates/kaem",
-    "crates/kaem-transport",
-    "crates/kaem-codec",
-    "crates/kaem-radio",
-    "crates/kaem-udp",
-    "crates/kaem-loopback",
-    "crates/kaem-crypto",
-]
+members = ["crates/*", "binaries/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +15,10 @@ kaem-loopback = { path = "crates/kaem-loopback" }
 # application
 kaem-codec = { path = "crates/kaem-codec" }
 kaem-crypto = { path = "crates/kaem-crypto" }
+kaem-node = { path = "crates/kaem-node" }
+kaem-pairing = { path = "crates/kaem-pairing" }
+kaem-mesh = { path = "crates/kaem-mesh" }
+kaem-sim = { path = "crates/kaem-sim" }
 # third-party
 chrono = "0.4"
 color-eyre = "0.6.5"
@@ -37,3 +33,7 @@ getrandom = "0.4.2"
 ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
 zeroize = "1"
 rand = "0.10.1"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+# sandbox (egui)
+eframe = "0.34.3"
+egui = "0.34.3"
