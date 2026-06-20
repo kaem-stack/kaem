@@ -19,6 +19,9 @@ use crate::ui::log::render_log_panel;
 
 const CURSOR_STEP: f32 = 2.0;
 
+/// Preset playback-speed multipliers offered in the top bar.
+const SPEED_PRESETS: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+
 pub struct SandboxApp {
     sandbox: Sandbox,
     /// Per-node chat window state, indexed in lockstep with `sandbox.nodes`.
@@ -61,7 +64,14 @@ impl SandboxApp {
 impl eframe::App for SandboxApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         if self.sandbox.running {
-            self.sandbox.step();
+            // `step()` itself always advances by exactly `dt` — the speed
+            // control instead steps multiple times per real frame at higher
+            // multipliers, leaving `step()`'s own per-call semantics (used by
+            // tests and the manual "step" button) unchanged.
+            let steps = self.sandbox.speed.max(0.0).round().max(1.0) as usize;
+            for _ in 0..steps {
+                self.sandbox.step();
+            }
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
 
@@ -114,6 +124,17 @@ impl SandboxApp {
                     .changed()
                 {
                     self.sandbox.medium.borrow_mut().set_range(range);
+                }
+
+                ui.separator();
+
+                ui.label(RichText::new("speed").color(theme::META));
+                for preset in SPEED_PRESETS {
+                    let label = format!("{preset}x");
+                    let active = (self.sandbox.speed - preset).abs() < f32::EPSILON;
+                    if ui.selectable_label(active, label).clicked() {
+                        self.sandbox.speed = preset;
+                    }
                 }
             });
         });

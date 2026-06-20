@@ -22,6 +22,12 @@ const DEFAULT_RANGE: f32 = 35.0;
 const DEFAULT_LOSS: f32 = 0.0;
 const DEFAULT_SEED: u64 = 1;
 
+/// Multiplier applied to `dt` per auto-step tick while `running` — the
+/// playback-speed control. `step()` itself always advances by exactly `dt`
+/// regardless of this value; only the auto-step loop in `app.rs` scales by
+/// `speed`.
+const DEFAULT_SPEED: f32 = 1.0;
+
 /// Bound on event-log growth — old entries are evicted FIFO once exceeded,
 /// so a long-running sandbox session doesn't grow the log unboundedly.
 const EVENT_LOG_CAPACITY: usize = 500;
@@ -119,6 +125,10 @@ pub struct Sandbox {
     pub hops: Vec<Hop>,
     pub log: Vec<LogEntry>,
     pub cursor: Pos,
+    /// Playback-speed multiplier for the auto-step loop — `1.0` is
+    /// real-time-with-`dt`, `2.0` runs the sim twice as fast, etc. Doesn't
+    /// affect the semantics of a single `step()` call.
+    pub speed: f32,
 }
 
 impl Sandbox {
@@ -144,6 +154,7 @@ impl Sandbox {
                 x: FIELD / 2.0,
                 y: FIELD / 2.0,
             },
+            speed: DEFAULT_SPEED,
         };
 
         // Seed a handful of starting nodes spread across the field so the
@@ -447,6 +458,7 @@ mod tests {
             hops: Vec::new(),
             log: Vec::new(),
             cursor: Pos { x: 0.0, y: 0.0 },
+            speed: DEFAULT_SPEED,
         }
     }
 
