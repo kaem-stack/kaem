@@ -72,15 +72,26 @@ Everything that moves opaque byte frames between nodes, behind one port:
 - `Transport { send, recv }` + `TransportError` — the port every link speaks;
   `recv` is non-blocking (`Ok(None)` when nothing is ready). The trait lives
   here and is re-exported; a binary picks which impl to build.
-- `RadioTransport` — the real RF signal chain in software, in two seams:
-  1. `modem` — a binary-FSK software modem. `modulate` turns a byte frame into a
-     framed bitstream (preamble, sync word, len, payload, crc16) then complex
-     baseband `Iq` samples; `demodulate` recovers the bytes via a quadrature
-     frequency discriminator. A frame that fails CRC is dropped like line noise.
-  2. `channel` — `trait Channel { transmit, receive, local_addr }`, the seam
+- `RadioTransport` — the real RF signal chain in software, in three seams:
+  1. `fragment` — message fragmentation to the over-the-air MTU. `Fragmenter`
+     splits a whole frame into ordered, `msg_id`/`total`/`index`-tagged pieces;
+     `Reassembler` rebuilds it, tolerating out-of-order and duplicate delivery.
+     This sits above the modem, so the chat/mesh layers keep handing whole
+     frames down and never learn the air has a size limit. Best-effort to match
+     the link: a dropped fragment leaves its message incomplete, and the
+     reassembler bounds half-assembled messages by count (no clock needed, so
+     `Transport`'s non-blocking contract holds). MTU is a `RadioTransport`
+     construction parameter (`with_mtu`).
+  2. `modem` — a binary-FSK software modem. `modulate` turns a (fragment) byte
+     frame into a framed bitstream (preamble, sync word, len, payload, crc16)
+     then complex baseband `Iq` samples; `demodulate` recovers the bytes via a
+     quadrature frequency discriminator. A frame that fails CRC is dropped like
+     line noise — so a corrupted fragment never reaches the reassembler.
+  3. `channel` — `trait Channel { transmit, receive, local_addr }`, the seam
      between DSP and the radio. `UdpChannel` carries IQ bursts over UDP (the
      simulated airwaves), fragmenting/reassembling bursts larger than one
-     datagram. A real SDR (SoapySDR/HackRF/Pluto) is just another `Channel`;
+     datagram (a separate, IQ-level concern from the message fragmentation
+     above). A real SDR (SoapySDR/HackRF/Pluto) is just another `Channel`;
      the modem and `Transport` above it never change. `RadioTransport` holds a
      `Box<dyn Channel>`, so it's channel-generic.
 - `UdpTransport` / `Loopback` — dev scaffolding that skips the modem: raw
