@@ -10,21 +10,36 @@
 use std::net::SocketAddr;
 
 use crate::channel::{Channel, UdpChannel};
+use crate::fragment::{DEFAULT_MAX_PAYLOAD, Fragmenter, Reassembler};
 use crate::modem::{Modem, ModemParams};
 use crate::transport::{Transport, TransportError};
 
 pub struct RadioTransport {
     modem: Modem,
     channel: Box<dyn Channel>,
+    /// Splits an outbound frame into MTU-sized pieces; reassembles the inbound
+    /// ones. The air carries a frame too big for one transmission as several
+    /// modulated fragments — invisible to whoever handed the frame down.
+    fragmenter: Fragmenter,
+    reassembler: Reassembler,
 }
 
 impl RadioTransport {
     /// Build a radio over any [`Channel`] — UDP today, an SDR device later —
-    /// with the default modem parameters.
+    /// with the default modem parameters and over-the-air MTU.
     pub fn new(channel: Box<dyn Channel>) -> Self {
+        Self::with_mtu(channel, DEFAULT_MAX_PAYLOAD)
+    }
+
+    /// Build a radio with an explicit over-the-air MTU: the most bytes of a
+    /// caller's frame carried per modulated fragment. A binary tunes this to
+    /// the frame size its real (or simulated) front-end can push in one burst.
+    pub fn with_mtu(channel: Box<dyn Channel>, mtu: usize) -> Self {
         Self {
             modem: Modem::new(ModemParams::default()),
             channel,
+            fragmenter: Fragmenter::new(mtu),
+            reassembler: Reassembler::new(),
         }
     }
 
@@ -43,17 +58,26 @@ impl RadioTransport {
 
 impl Transport for RadioTransport {
     fn send(&mut self, frame: &[u8]) -> Result<(), TransportError> {
-        let samples = self.modem.modulate(frame);
-        self.channel.transmit(&samples)
+        // Split into MTU-sized fragments and modulate each as its own burst;
+        // a frame within one MTU is just a single fragment.
+        for fragment in self.fragmenter.fragment(frame) {
+            let samples = self.modem.modulate(&fragment);
+            self.channel.transmit(&samples)?;
+        }
+        Ok(())
     }
 
     fn recv(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        // Drain bursts until one demodulates cleanly or the channel is empty;
-        // a burst that fails its CRC is dropped like real-world line noise.
+        // Drain bursts until reassembly completes a whole frame or the channel
+        // is empty. A burst that fails its CRC is dropped like real-world line
+        // noise; a fragment that arrives feeds the reassembler, which only
+        // surfaces a frame once every piece of it is in.
         loop {
             match self.channel.receive()? {
                 Some(samples) => {
-                    if let Some(frame) = self.modem.demodulate(&samples) {
+                    if let Some(fragment) = self.modem.demodulate(&samples)
+                        && let Some(frame) = self.reassembler.ingest(&fragment)
+                    {
                         return Ok(Some(frame));
                     }
                 }
@@ -103,6 +127,24 @@ mod tests {
         // Big enough that the modulated IQ spans several datagrams.
         let frame: Vec<u8> = (0..2000).map(|i| (i * 7 % 256) as u8).collect();
         tx.send(&frame).unwrap();
+        assert_eq!(recv_blocking(&mut rx), frame);
+    }
+
+    #[test]
+    fn frame_past_the_mtu_travels_as_fragments_and_rebuilds() {
+        // A deliberately tiny MTU so a modest frame is forced across several
+        // over-the-air fragments, each its own modulated burst.
+        let rx = RadioTransport::with_mtu(
+            Box::new(UdpChannel::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap()),
+            16,
+        );
+        let rx_addr = rx.local_addr().expect("udp channel has a local addr");
+        let mut tx =
+            RadioTransport::with_mtu(Box::new(UdpChannel::bind(any_local(), rx_addr).unwrap()), 16);
+        let mut rx = rx;
+
+        let frame = b"this message is comfortably longer than a sixteen byte mtu";
+        tx.send(frame).unwrap();
         assert_eq!(recv_blocking(&mut rx), frame);
     }
 }

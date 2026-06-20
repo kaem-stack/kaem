@@ -19,6 +19,7 @@
 //! [`Transport`] surface above it never change.
 
 mod channel;
+mod fragment;
 mod loopback;
 mod modem;
 mod radio;
