@@ -1,0 +1,12 @@
+[package]
+name = "kaem-mesh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kaem-node.workspace = true
+kaem-pairing.workspace = true
+kaem-codec.workspace = true
+kaem-crypto.workspace = true
+rand.workspace = true
+anyhow.workspace = true
