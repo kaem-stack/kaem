@@ -28,7 +28,7 @@ const PREAMBLE_LEN: usize = 4;
 const SYNC: [u8; 2] = [0x2D, 0xD4];
 
 /// One complex baseband sample.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Iq {
     pub i: f32,
     pub q: f32,
@@ -194,7 +194,8 @@ fn find_subsequence(haystack: &[bool], needle: &[bool]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len()).find(|&start| &haystack[start..start + needle.len()] == needle)
+    (0..=haystack.len() - needle.len())
+        .find(|&start| &haystack[start..start + needle.len()] == needle)
 }
 
 /// CRC-16/CCITT-FALSE. Kept local so the radio link layer owns its own

@@ -13,26 +13,35 @@ use std::net::SocketAddr;
 
 use kaem_transport::{Transport, TransportError};
 
-use channel::{Channel, UdpChannel};
-use modem::{Modem, ModemParams};
+pub use channel::Channel;
+use channel::UdpChannel;
+use modem::Modem;
+pub use modem::{Iq, ModemParams};
 
 pub struct RadioTransport {
     modem: Modem,
-    channel: UdpChannel,
+    channel: Box<dyn Channel>,
 }
 
 impl RadioTransport {
+    /// Build a radio over any [`Channel`] — UDP today, an SDR device later —
+    /// with the default modem parameters.
+    pub fn new(channel: Box<dyn Channel>) -> Self {
+        Self {
+            modem: Modem::new(ModemParams::default()),
+            channel,
+        }
+    }
+
     /// Bind locally and target `peer` for the simulated RF channel.
     pub fn bind(bind: SocketAddr, peer: SocketAddr) -> Result<Self, TransportError> {
-        Ok(Self {
-            modem: Modem::new(ModemParams::default()),
-            channel: UdpChannel::bind(bind, peer)?,
-        })
+        Ok(Self::new(Box::new(UdpChannel::bind(bind, peer)?)))
     }
 
     /// The address actually bound (useful when the caller passed port 0).
+    /// Channels without an address (e.g. the in-process sim) return `None`.
     #[allow(dead_code)] // used in tests; useful for a future status line
-    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    pub fn local_addr(&self) -> Option<SocketAddr> {
         self.channel.local_addr()
     }
 }
@@ -70,7 +79,7 @@ mod tests {
 
     fn pair() -> (RadioTransport, RadioTransport) {
         let rx = RadioTransport::bind(any_local(), "127.0.0.1:9".parse().unwrap()).unwrap();
-        let rx_addr = rx.local_addr().unwrap();
+        let rx_addr = rx.local_addr().expect("udp channel has a local addr");
         let tx = RadioTransport::bind(any_local(), rx_addr).unwrap();
         (tx, rx)
     }

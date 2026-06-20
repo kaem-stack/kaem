@@ -19,6 +19,13 @@ use crate::modem::Iq;
 pub trait Channel {
     fn transmit(&mut self, samples: &[Iq]) -> Result<(), TransportError>;
     fn receive(&mut self) -> Result<Option<Vec<Iq>>, TransportError>;
+
+    /// The address actually bound, if this channel has one (e.g. UDP). A
+    /// channel without a network address — like the in-process sim — inherits
+    /// this default.
+    fn local_addr(&self) -> Option<SocketAddr> {
+        None
+    }
 }
 
 const BYTES_PER_SAMPLE: usize = 8; // two little-endian f32s
@@ -53,11 +60,6 @@ impl UdpChannel {
             pending: HashMap::new(),
             completed: VecDeque::new(),
         })
-    }
-
-    #[allow(dead_code)] // used in tests; useful for a future status line
-    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.local_addr()
     }
 
     /// Fold one received datagram into the reassembly state, surfacing any
@@ -133,6 +135,10 @@ impl Channel for UdpChannel {
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.socket.local_addr().ok()
     }
 }
 
