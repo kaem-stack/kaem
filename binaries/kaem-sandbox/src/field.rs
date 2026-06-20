@@ -13,7 +13,7 @@
 
 use egui::{Pos2, Rect};
 
-use kaem_link::Pos;
+use kaem_sim::Pos;
 
 /// The virtual field is a fixed `FIELD` x `FIELD` square (in arbitrary
 /// distance units, conceptually meters).

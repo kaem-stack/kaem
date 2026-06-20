@@ -8,6 +8,7 @@ anyhow.workspace = true
 kaem-node.workspace = true
 kaem-mesh.workspace = true
 kaem-link.workspace = true
+kaem-sim.workspace = true
 kaem-crypto.workspace = true
 eframe.workspace = true
 egui.workspace = true

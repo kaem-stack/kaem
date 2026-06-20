@@ -5,7 +5,7 @@
 
 use egui::{Align2, FontId, Painter, Rect, Response, Sense, Stroke, Ui};
 
-use kaem_link::{Medium, Pos};
+use kaem_sim::{Medium, Pos};
 
 use crate::field::{WAVE_SPEED, field_radius_to_screen, field_to_screen, screen_to_field};
 use crate::sandbox::Pulse;

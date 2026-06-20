@@ -8,8 +8,10 @@
 //!   binary; this crate only provides the contract and the implementations.
 //! * [`RadioTransport`] — the real signal path: an FSK [`modem`](crate::modem)
 //!   turns a frame into baseband [`Iq`] samples that a [`Channel`] carries to
-//!   the peer. [`UdpChannel`](crate::channel) is the over-UDP "airwaves";
-//!   [`SimChannel`] carries the same samples across an in-process [`Medium`].
+//!   the peer. [`UdpChannel`](crate::channel) is the over-UDP "airwaves"; a
+//!   binary can carry the same samples across an in-process RF simulation
+//!   (`kaem-sim`) by adapting it to [`Channel`] — this crate has no opinion
+//!   on the sim, only on the seam a simulated channel must satisfy.
 //! * [`UdpTransport`] / [`Loopback`] — development scaffolding that skips the
 //!   modem: raw datagrams, and an in-process echo for running solo.
 //!
@@ -20,7 +22,6 @@ mod channel;
 mod loopback;
 mod modem;
 mod radio;
-mod sim;
 mod transport;
 mod udp;
 
@@ -28,6 +29,5 @@ pub use channel::Channel;
 pub use loopback::Loopback;
 pub use modem::{Iq, ModemParams};
 pub use radio::RadioTransport;
-pub use sim::{Medium, NodeId, Pos, SimChannel};
 pub use transport::{Transport, TransportError};
 pub use udp::UdpTransport;

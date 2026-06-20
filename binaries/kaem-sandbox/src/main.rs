@@ -2,6 +2,7 @@ mod app;
 mod crypto_adapter;
 mod field;
 mod sandbox;
+mod sim_adapter;
 mod theme;
 mod ui;
 

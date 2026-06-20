@@ -6,12 +6,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use kaem_link::{Medium, NodeId, Pos, RadioTransport, SimChannel, Transport};
+use kaem_link::{RadioTransport, Transport};
 use kaem_mesh::MeshNode;
 use kaem_node::{Command, Node};
+use kaem_sim::{Medium, NodeId, Pos};
 
 use crate::crypto_adapter::KaemCrypto;
 use crate::field::FIELD;
+use crate::sim_adapter::SimChannelAdapter;
 
 /// Virtual milliseconds per tick.
 pub const DT: u64 = 50;
@@ -94,7 +96,7 @@ impl Sandbox {
 
     /// Register a new node at `pos`, naming it from `NAMES` (falling back to
     /// `n{N}` once the list is exhausted), and wire its radio transport over
-    /// a fresh [`SimChannel`] on the shared medium.
+    /// a fresh [`SimChannelAdapter`] on the shared medium.
     pub fn add_node(&mut self, pos: Pos) -> usize {
         let id = self.medium.borrow_mut().register(pos);
         let name = NAMES
@@ -102,7 +104,8 @@ impl Sandbox {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("n{}", self.nodes.len()));
 
-        let transport = RadioTransport::new(Box::new(SimChannel::new(id, self.medium.clone())));
+        let transport =
+            RadioTransport::new(Box::new(SimChannelAdapter::new(id, self.medium.clone())));
         let chat = Node::new(name.clone());
 
         self.nodes.push(SimNode {
