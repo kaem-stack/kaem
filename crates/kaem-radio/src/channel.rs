@@ -88,9 +88,11 @@ impl UdpChannel {
         }
         entry.insert(index, datagram[HEADER..].to_vec());
 
-        if entry.is_complete() {
-            let bytes = self.pending.remove(&stream_id).unwrap().assemble();
-            self.completed.push_back(deserialize(&bytes));
+        if entry.is_complete()
+            && let Some(reassembly) = self.pending.remove(&stream_id)
+        {
+            self.completed
+                .push_back(deserialize(&reassembly.assemble()));
         }
     }
 }
