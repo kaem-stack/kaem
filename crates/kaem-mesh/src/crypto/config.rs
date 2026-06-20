@@ -5,10 +5,3 @@ use crate::keys::Algorithm;
 pub struct EncryptConfig {
     pub algorithm: Algorithm,
 }
-
-impl EncryptConfig {
-    pub fn with_algorithm(mut self, algorithm: Algorithm) -> Self {
-        self.algorithm = algorithm;
-        self
-    }
-}

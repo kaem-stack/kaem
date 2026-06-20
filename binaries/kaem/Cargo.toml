@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 kaem-link.workspace = true
-kaem-codec.workspace = true
 kaem-node.workspace = true
 chrono.workspace = true
 color-eyre.workspace = true

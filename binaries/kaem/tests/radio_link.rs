@@ -1,12 +1,12 @@
 //! End-to-end across the crate boundary: the same wiring `main` performs —
-//! a `kaem-radio` transport plus the `kaem-codec` wire protocol — carrying a
-//! message between two SDR nodes intact.
+//! a `kaem-link` radio transport plus the `kaem-node` wire protocol — carrying
+//! a message between two SDR nodes intact.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use kaem_codec::{WireMessage, decode, encode};
 use kaem_link::{RadioTransport, Transport};
+use kaem_node::{WireMessage, decode, encode};
 
 #[test]
 fn message_flows_through_the_radio_transport() {

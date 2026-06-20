@@ -1,7 +1,8 @@
 //! A node's ML-KEM-768 identity keypair.
 
 use anyhow::Result;
-use kaem_crypto::keys::{self, KeyGenConfig};
+
+use crate::keys::{self, KeyGenConfig};
 
 /// A node's identity: the public key it hands out to be paired against, and
 /// the secret key it uses to accept pairing requests. Held only in memory —
@@ -13,13 +14,9 @@ pub struct Identity {
 }
 
 /// Generate a fresh in-memory ML-KEM-768 identity. Never touches disk —
-/// callers that want persistence should reach for [`kaem_crypto::keys::save`]
-/// directly; sandbox nodes never do.
+/// sandbox nodes hold their identity only for the lifetime of the process.
 pub fn generate_identity() -> Result<Identity> {
-    // `out_dir` is required by `KeyGenConfig` but unused unless `keys::save`
-    // is called, which this function deliberately never does.
-    let config = KeyGenConfig::new(".".into());
-    let generated = keys::generate(&config)?;
+    let generated = keys::generate(&KeyGenConfig::default())?;
     Ok(Identity {
         public_key: generated.public_key,
         secret_key: generated.secret_key,

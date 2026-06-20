@@ -1,6 +1,0 @@
-[package]
-name = "kaem-codec"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]

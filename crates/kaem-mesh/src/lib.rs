@@ -5,7 +5,7 @@
 //!
 //! Nodes start as strangers. [`MeshNode::begin_pairing`] /
 //! [`MeshNode::finish_pairing`] mint a shared chatroom key via
-//! [`kaem_pairing::handshake`]. [`MeshNode::send`] wraps a [`WireMessage`] in
+//! [`crate::pairing::handshake`]. [`MeshNode::send`] wraps a [`WireMessage`] in
 //! an [`Envelope`] sealed under the chatroom key; [`MeshNode::on_frame`]
 //! decodes any envelope it hears, decrypts and folds it in if it recognizes
 //! the chatroom, and — regardless — rebroadcasts it with a decremented TTL so
@@ -13,9 +13,17 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use kaem_codec::{Envelope, WireMessage, decode_envelope, encode_envelope};
-use kaem_node::{Contact, Node, Outbound, Time};
-use kaem_pairing::{Identity, Store, generate_identity, handshake};
+use kaem_node::{Contact, Node, Outbound, Time, WireMessage, decode, encode};
+
+mod crypto;
+mod envelope;
+mod event;
+mod keys;
+mod pairing;
+mod symmetric;
+
+use crate::envelope::{Envelope, decode_envelope, encode_envelope};
+use crate::pairing::{Chatroom, Identity, Store, generate_identity, handshake};
 
 /// Hop budget for a freshly sent message.
 const DEFAULT_TTL: u8 = 8;
@@ -102,7 +110,7 @@ impl MeshNode {
     /// same chatroom via [`finish_pairing`].
     pub fn begin_pairing(&mut self, peer: &str, peer_pubkey: &[u8]) -> anyhow::Result<Vec<u8>> {
         let (chatroom_id, key, sealed) = handshake::pair(&self.identity, peer_pubkey)?;
-        self.store.insert(&kaem_pairing::Chatroom {
+        self.store.insert(&Chatroom {
             id: chatroom_id,
             peer: peer.to_string(),
             key,
@@ -115,7 +123,7 @@ impl MeshNode {
     /// the pairing.
     pub fn finish_pairing(&mut self, peer: &str, sealed: &[u8]) -> anyhow::Result<()> {
         let (chatroom_id, key) = handshake::accept(&self.identity, sealed)?;
-        self.store.insert(&kaem_pairing::Chatroom {
+        self.store.insert(&Chatroom {
             id: chatroom_id,
             peer: peer.to_string(),
             key,
@@ -135,8 +143,8 @@ impl MeshNode {
             to: to.to_string(),
             body: body.clone(),
         };
-        let plaintext = kaem_codec::encode(&message);
-        let ciphertext = kaem_crypto::symmetric::seal(&chatroom.key, &plaintext);
+        let plaintext = encode(&message);
+        let ciphertext = crate::symmetric::seal(&chatroom.key, &plaintext);
 
         let envelope = Envelope {
             chatroom_id: chatroom.id,
@@ -183,11 +191,10 @@ impl MeshNode {
         let Some(chatroom) = self.store.lookup(envelope.chatroom_id) else {
             return; // not our chatroom — can't read it, nothing to fold
         };
-        let Ok(plaintext) = kaem_crypto::symmetric::open(&chatroom.key, &envelope.ciphertext)
-        else {
+        let Ok(plaintext) = crate::symmetric::open(&chatroom.key, &envelope.ciphertext) else {
             return; // wrong key or corrupted — drop silently
         };
-        let Ok(message) = kaem_codec::decode(&plaintext) else {
+        let Ok(message) = decode(&plaintext) else {
             return; // not a valid WireMessage inside — drop silently
         };
         if message.from == self.callsign() {

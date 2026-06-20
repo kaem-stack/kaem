@@ -10,10 +10,7 @@ edition = "2024"
 # the link layer — the transport port + every link implementation
 kaem-link = { path = "crates/kaem-link" }
 # application
-kaem-codec = { path = "crates/kaem-codec" }
-kaem-crypto = { path = "crates/kaem-crypto" }
 kaem-node = { path = "crates/kaem-node" }
-kaem-pairing = { path = "crates/kaem-pairing" }
 kaem-mesh = { path = "crates/kaem-mesh" }
 # third-party
 chrono = "0.4"

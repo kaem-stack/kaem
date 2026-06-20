@@ -1,12 +1,12 @@
-//! The flood-relay envelope: a frame format independent of [`crate::WireMessage`]
-//! used to carry an encrypted payload across the mesh.
+//! The flood-relay envelope: the mesh's own frame format, carrying an encrypted
+//! payload across hops.
 //!
 //! Only `chatroom_id`, `message_id`, and `ttl` are ever visible in cleartext —
 //! `ciphertext` is opaque to any node that doesn't hold the chatroom's
 //! symmetric key. A node that can't decrypt it can still relay it: that's the
-//! whole point of the envelope existing as its own frame, distinct from
-//! `WireMessage`, with its own magic bytes so the two can never be confused
-//! while decoding.
+//! whole point of the envelope existing as its own frame, with its own magic
+//! bytes (`KE`) distinct from the chat `WireMessage`'s (`KM`) so the two can
+//! never be confused while decoding.
 //!
 //! Frame layout (all integers big-endian):
 //!
@@ -17,11 +17,7 @@
 //! +--------+---------+--------------+-------------+-----+----------------+------------+-------+
 //! ```
 //!
-//! `crc16` is CRC-16/CCITT-FALSE over every preceding byte, same as
-//! [`crate::WireMessage`]'s frame.
-
-use crate::CodecError;
-use crate::crc;
+//! `crc16` is CRC-16/CCITT-FALSE over every preceding byte.
 
 const MAGIC: [u8; 2] = *b"KE";
 const VERSION: u8 = 1;
@@ -41,6 +37,35 @@ pub struct Envelope {
     pub ciphertext: Vec<u8>,
 }
 
+/// Errors produced while decoding an envelope frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvelopeError {
+    /// Frame is shorter than the fixed header requires.
+    TooShort,
+    /// Magic bytes did not match — not a kaem envelope frame.
+    BadMagic,
+    /// Protocol version is not understood by this build.
+    BadVersion(u8),
+    /// A length field ran past the end of the buffer.
+    Truncated,
+    /// Trailing CRC did not match the payload.
+    BadCrc,
+}
+
+impl std::fmt::Display for EnvelopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnvelopeError::TooShort => write!(f, "envelope too short"),
+            EnvelopeError::BadMagic => write!(f, "bad magic"),
+            EnvelopeError::BadVersion(v) => write!(f, "unsupported version {v}"),
+            EnvelopeError::Truncated => write!(f, "envelope truncated"),
+            EnvelopeError::BadCrc => write!(f, "crc mismatch"),
+        }
+    }
+}
+
+impl std::error::Error for EnvelopeError {}
+
 /// Serialize an [`Envelope`] into a self-describing byte frame.
 pub fn encode_envelope(envelope: &Envelope) -> Vec<u8> {
     let mut buf = Vec::with_capacity(2 + 1 + 8 + 8 + 1 + 4 + envelope.ciphertext.len() + 2);
@@ -52,32 +77,32 @@ pub fn encode_envelope(envelope: &Envelope) -> Vec<u8> {
     buf.extend_from_slice(&(envelope.ciphertext.len() as u32).to_be_bytes());
     buf.extend_from_slice(&envelope.ciphertext);
 
-    let checksum = crc::crc16(&buf);
+    let checksum = crc16(&buf);
     buf.extend_from_slice(&checksum.to_be_bytes());
     buf
 }
 
 /// Parse a byte frame back into an [`Envelope`], validating magic and CRC.
-pub fn decode_envelope(frame: &[u8]) -> Result<Envelope, CodecError> {
+pub fn decode_envelope(frame: &[u8]) -> Result<Envelope, EnvelopeError> {
     // Smallest possible frame: magic + version + chatroom_id + message_id +
     // ttl + zero-length ciphertext_len + crc = 2 + 1 + 8 + 8 + 1 + 4 + 2 = 26.
     if frame.len() < 26 {
-        return Err(CodecError::TooShort);
+        return Err(EnvelopeError::TooShort);
     }
 
     let (payload, checksum) = frame.split_at(frame.len() - 2);
     let expected = u16::from_be_bytes([checksum[0], checksum[1]]);
-    if crc::crc16(payload) != expected {
-        return Err(CodecError::BadCrc);
+    if crc16(payload) != expected {
+        return Err(EnvelopeError::BadCrc);
     }
 
     let mut r = Reader::new(payload);
     if r.take(2)? != MAGIC {
-        return Err(CodecError::BadMagic);
+        return Err(EnvelopeError::BadMagic);
     }
     let version = r.u8()?;
     if version != VERSION {
-        return Err(CodecError::BadVersion(version));
+        return Err(EnvelopeError::BadVersion(version));
     }
 
     let chatroom_id = r.u64()?;
@@ -105,28 +130,48 @@ impl<'a> Reader<'a> {
         Self { buf, pos: 0 }
     }
 
-    fn take(&mut self, n: usize) -> Result<&'a [u8], CodecError> {
-        let end = self.pos.checked_add(n).ok_or(CodecError::Truncated)?;
-        let slice = self.buf.get(self.pos..end).ok_or(CodecError::Truncated)?;
+    fn take(&mut self, n: usize) -> Result<&'a [u8], EnvelopeError> {
+        let end = self.pos.checked_add(n).ok_or(EnvelopeError::Truncated)?;
+        let slice = self
+            .buf
+            .get(self.pos..end)
+            .ok_or(EnvelopeError::Truncated)?;
         self.pos = end;
         Ok(slice)
     }
 
-    fn u8(&mut self) -> Result<u8, CodecError> {
+    fn u8(&mut self) -> Result<u8, EnvelopeError> {
         Ok(self.take(1)?[0])
     }
 
-    fn u32(&mut self) -> Result<u32, CodecError> {
+    fn u32(&mut self) -> Result<u32, EnvelopeError> {
         let b = self.take(4)?;
         Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    fn u64(&mut self) -> Result<u64, CodecError> {
+    fn u64(&mut self) -> Result<u64, EnvelopeError> {
         let b = self.take(8)?;
         Ok(u64::from_be_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
     }
+}
+
+/// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection, xorout 0x0000).
+/// Kept local so the envelope frame owns its own integrity check.
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
 }
 
 #[cfg(test)]
@@ -165,7 +210,7 @@ mod tests {
         let mut frame = encode_envelope(&sample());
         let last = frame.len() - 3;
         frame[last] ^= 0xFF;
-        assert_eq!(decode_envelope(&frame), Err(CodecError::BadCrc));
+        assert_eq!(decode_envelope(&frame), Err(EnvelopeError::BadCrc));
     }
 
     #[test]
@@ -182,28 +227,20 @@ mod tests {
         payload.extend_from_slice(&2u64.to_be_bytes());
         payload.push(0);
         payload.extend_from_slice(&0u32.to_be_bytes());
-        let checksum = crc::crc16(&payload);
+        let checksum = crc16(&payload);
         payload.extend_from_slice(&checksum.to_be_bytes());
-        assert_eq!(decode_envelope(&payload), Err(CodecError::BadMagic));
+        assert_eq!(decode_envelope(&payload), Err(EnvelopeError::BadMagic));
     }
 
     #[test]
     fn too_short_is_rejected() {
-        assert_eq!(decode_envelope(b"short"), Err(CodecError::TooShort));
+        assert_eq!(decode_envelope(b"short"), Err(EnvelopeError::TooShort));
     }
 
     #[test]
-    fn does_not_collide_with_wire_message_decoding() {
-        // An envelope frame must never successfully decode as a WireMessage,
-        // and vice versa, since they use distinct magic bytes.
-        let envelope_frame = encode_envelope(&sample());
-        assert!(crate::decode(&envelope_frame).is_err());
-
-        let wire_frame = crate::encode(&crate::WireMessage {
-            from: "alice".into(),
-            to: "bob".into(),
-            body: "hi".into(),
-        });
-        assert!(decode_envelope(&wire_frame).is_err());
+    fn crc16_known_vector() {
+        // CRC-16/CCITT-FALSE of "123456789" is 0x29B1.
+        assert_eq!(crc16(b"123456789"), 0x29B1);
+        assert_eq!(crc16(b""), 0xFFFF);
     }
 }

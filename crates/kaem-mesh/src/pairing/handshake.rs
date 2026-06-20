@@ -1,19 +1,19 @@
 //! The pairing handshake: mint a chatroom (id + symmetric key) and seal it
 //! for a specific peer's identity, using a real ML-KEM-768 encapsulation via
-//! [`kaem_crypto::crypto`]. Whoever holds the matching secret key is the only
-//! one who can recover the chatroom id and key from the sealed bytes.
+//! [`crate::crypto`]. Whoever holds the matching secret key is the only one who
+//! can recover the chatroom id and key from the sealed bytes.
 
 use anyhow::{Result, anyhow};
-use kaem_crypto::crypto::{self, EncryptConfig};
 
-use crate::identity::Identity;
+use super::identity::Identity;
+use crate::crypto::{self, EncryptConfig};
 
 /// 8 bytes of chatroom id + 32 bytes of chatroom key.
 const PLAINTEXT_LEN: usize = 8 + 32;
 
 /// Mint a new chatroom for pairing with whoever holds `peer_pubkey`'s
 /// matching secret key. Returns `(chatroom_id, key, sealed_for_peer)` — the
-/// caller inserts `(chatroom_id, key)` into its own [`crate::Store`]
+/// caller inserts `(chatroom_id, key)` into its own [`super::Store`]
 /// immediately, and hands `sealed_for_peer` to the peer to recover the same
 /// pair via [`accept`].
 pub fn pair(local_identity: &Identity, peer_pubkey: &[u8]) -> Result<(u64, [u8; 32], Vec<u8>)> {
@@ -56,7 +56,7 @@ pub fn accept(local_identity: &Identity, sealed: &[u8]) -> Result<(u64, [u8; 32]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::generate_identity;
+    use crate::pairing::generate_identity;
 
     #[test]
     fn pair_and_accept_agree_on_chatroom_id_and_key() {
