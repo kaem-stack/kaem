@@ -39,7 +39,11 @@ pub struct NodeId(pub u32);
 
 struct NodeState {
     pos: Pos,
-    inbox: VecDeque<Vec<Iq>>,
+    /// FIFO of bursts in flight to this node, each stamped with the virtual
+    /// millisecond it's due to arrive — modeling real propagation delay
+    /// rather than instant delivery, so a node can't act on (or relay) a
+    /// burst before it has actually "arrived".
+    inbox: VecDeque<(u64, Vec<Iq>)>,
 }
 
 /// The in-process RF field. Owns every registered node's position and inbox,
@@ -49,6 +53,9 @@ pub struct Medium {
     nodes: HashMap<NodeId, NodeState>,
     range: f32,
     loss: f32,
+    /// Propagation speed in field-units per virtual millisecond — how long a
+    /// burst takes to cross the field, used to delay delivery realistically.
+    speed: f32,
     rng: StdRng,
     next_id: u32,
 }
@@ -56,13 +63,16 @@ pub struct Medium {
 impl Medium {
     /// `range` is the maximum Euclidean distance at which a node can hear a
     /// transmission; `loss` is the independent per-recipient probability
-    /// [0,1] that an in-range burst is dropped anyway. `seed` makes the loss
-    /// decisions reproducible.
-    pub fn new(range: f32, loss: f32, seed: u64) -> Self {
+    /// [0,1] that an in-range burst is dropped anyway; `speed` is the
+    /// propagation speed in field-units per virtual millisecond, used to
+    /// delay delivery by `distance / speed` rather than delivering instantly.
+    /// `seed` makes the loss decisions reproducible.
+    pub fn new(range: f32, loss: f32, seed: u64, speed: f32) -> Self {
         Self {
             nodes: HashMap::new(),
             range,
             loss,
+            speed,
             rng: StdRng::seed_from_u64(seed),
             next_id: 0,
         }
@@ -121,33 +131,43 @@ impl Medium {
     }
 
     /// Deliver `burst` to every other registered node within `range` of
-    /// `from`, each independently dropped with probability `loss`. `from`
-    /// never receives its own transmission. A no-op if `from` isn't
-    /// registered (nowhere to transmit "from").
-    pub fn transmit(&mut self, from: NodeId, burst: &[Iq]) {
+    /// `from`, each independently dropped with probability `loss`, arriving
+    /// at `now + distance / speed` rather than instantly — `from` never
+    /// receives its own transmission. A no-op if `from` isn't registered
+    /// (nowhere to transmit "from").
+    pub fn transmit(&mut self, from: NodeId, burst: &[Iq], now: u64) {
         let Some(origin) = self.nodes.get(&from).map(|n| n.pos) else {
             return;
         };
 
-        let in_range: Vec<NodeId> = self
+        let in_range: Vec<(NodeId, f32)> = self
             .nodes
             .iter()
             .filter(|&(&id, node)| id != from && within_range(origin, node.pos, self.range))
-            .map(|(&id, _)| id)
+            .map(|(&id, node)| (id, distance(origin, node.pos)))
             .collect();
 
-        for id in in_range {
+        for (id, dist) in in_range {
             let dropped = self.loss > 0.0 && self.rng.random_bool(self.loss as f64);
             if !dropped && let Some(node) = self.nodes.get_mut(&id) {
-                node.inbox.push_back(burst.to_vec());
+                let delay = (dist / self.speed) as u64;
+                node.inbox.push_back((now + delay, burst.to_vec()));
             }
         }
     }
 
-    /// Pop the next burst delivered to `id`, if any (FIFO, one burst per
-    /// call).
-    pub fn take_burst(&mut self, id: NodeId) -> Option<Vec<Iq>> {
-        self.nodes.get_mut(&id).and_then(|n| n.inbox.pop_front())
+    /// Pop the next burst delivered to `id` whose arrival time has passed,
+    /// if any (FIFO, one burst per call). A burst still in flight (its
+    /// arrival time is after `now`) is left queued — it isn't deliverable
+    /// yet, so the node must not see or act on it.
+    pub fn take_burst(&mut self, id: NodeId, now: u64) -> Option<Vec<Iq>> {
+        let node = self.nodes.get_mut(&id)?;
+        match node.inbox.front() {
+            Some((deliver_at, _)) if *deliver_at <= now => {
+                node.inbox.pop_front().map(|(_, burst)| burst)
+            }
+            _ => None,
+        }
     }
 
     /// Unordered, unique pairs of nodes currently within `range` of each
@@ -180,45 +200,57 @@ fn within_range(a: Pos, b: Pos, range: f32) -> bool {
     dx * dx + dy * dy <= range * range
 }
 
+/// Euclidean distance between two field positions.
+fn distance(a: Pos, b: Pos) -> f32 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // A speed fast enough that delay rounds down to 0ms at the short
+    // distances most tests use — i.e. "instant" delivery, isolating these
+    // tests from the propagation-delay behavior covered separately below.
+    const FAST: f32 = 1000.0;
+
     #[test]
     fn delivers_within_range_but_not_back_to_sender() {
-        let mut medium = Medium::new(10.0, 0.0, 1);
+        let mut medium = Medium::new(10.0, 0.0, 1, FAST);
         let a = medium.register(Pos { x: 0.0, y: 0.0 });
         let b = medium.register(Pos { x: 5.0, y: 0.0 });
 
         let burst = vec![Iq { i: 1.0, q: 0.0 }];
-        medium.transmit(a, &burst);
+        medium.transmit(a, &burst, 0);
 
-        assert_eq!(medium.take_burst(b).as_deref(), Some(&burst[..]));
-        assert_eq!(medium.take_burst(a), None);
+        assert_eq!(medium.take_burst(b, 0).as_deref(), Some(&burst[..]));
+        assert_eq!(medium.take_burst(a, 0), None);
     }
 
     #[test]
     fn out_of_range_delivers_nothing() {
-        let mut medium = Medium::new(10.0, 0.0, 1);
+        let mut medium = Medium::new(10.0, 0.0, 1, FAST);
         let a = medium.register(Pos { x: 0.0, y: 0.0 });
         let b = medium.register(Pos { x: 50.0, y: 0.0 });
 
-        medium.transmit(a, &[Iq { i: 1.0, q: 0.0 }]);
+        medium.transmit(a, &[Iq { i: 1.0, q: 0.0 }], 0);
 
-        assert_eq!(medium.take_burst(b), None);
+        assert_eq!(medium.take_burst(b, 0), None);
     }
 
     #[test]
     fn seeded_loss_is_deterministic() {
         fn run(seed: u64) -> Vec<bool> {
-            let mut medium = Medium::new(10.0, 0.5, seed);
+            let mut medium = Medium::new(10.0, 0.5, seed, FAST);
             let a = medium.register(Pos { x: 0.0, y: 0.0 });
             let b = medium.register(Pos { x: 1.0, y: 0.0 });
 
             let mut delivered = Vec::new();
-            for _ in 0..50 {
-                medium.transmit(a, &[Iq { i: 1.0, q: 0.0 }]);
-                delivered.push(medium.take_burst(b).is_some());
+            for now in 0..50 {
+                medium.transmit(a, &[Iq { i: 1.0, q: 0.0 }], now);
+                delivered.push(medium.take_burst(b, now).is_some());
             }
             delivered
         }
@@ -230,5 +262,18 @@ mod tests {
         // some deliveries, otherwise the test isn't exercising the rng path.
         assert!(first.iter().any(|&d| d));
         assert!(first.iter().any(|&d| !d));
+    }
+
+    #[test]
+    fn burst_is_not_deliverable_before_its_propagation_delay_elapses() {
+        // speed = 1 unit/ms, distance = 10 units -> 10ms travel time.
+        let mut medium = Medium::new(20.0, 0.0, 1, 1.0);
+        let a = medium.register(Pos { x: 0.0, y: 0.0 });
+        let b = medium.register(Pos { x: 10.0, y: 0.0 });
+
+        medium.transmit(a, &[Iq { i: 1.0, q: 0.0 }], 0);
+
+        assert_eq!(medium.take_burst(b, 5), None, "still in flight at t=5ms");
+        assert!(medium.take_burst(b, 10).is_some(), "arrived by t=10ms");
     }
 }

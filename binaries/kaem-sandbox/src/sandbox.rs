@@ -3,7 +3,7 @@
 //! ([`Sandbox::step`], coordinate-independent message delivery) is directly
 //! unit-testable, independent of whatever UI framework drives it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use kaem_link::{RadioTransport, Transport};
@@ -107,6 +107,10 @@ impl EventKind {
 
 pub struct Sandbox {
     pub medium: Rc<RefCell<Medium>>,
+    /// Mirrors `clock`, shared with every node's [`SimChannelAdapter`] so
+    /// `Medium` can stamp and check propagation delay — `Channel` itself
+    /// carries no time parameter (see `SimChannelAdapter`'s doc comment).
+    now: Rc<Cell<u64>>,
     pub nodes: Vec<SimNode>,
     pub clock: u64,
     pub dt: u64,
@@ -123,10 +127,12 @@ impl Sandbox {
             DEFAULT_RANGE,
             DEFAULT_LOSS,
             DEFAULT_SEED,
+            crate::field::WAVE_SPEED,
         )));
 
         let mut sandbox = Self {
             medium,
+            now: Rc::new(Cell::new(0)),
             nodes: Vec::new(),
             clock: 0,
             dt: DT,
@@ -164,8 +170,11 @@ impl Sandbox {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("n{}", self.nodes.len()));
 
-        let transport =
-            RadioTransport::new(Box::new(SimChannelAdapter::new(id, self.medium.clone())));
+        let transport = RadioTransport::new(Box::new(SimChannelAdapter::new(
+            id,
+            self.medium.clone(),
+            self.now.clone(),
+        )));
         let chat = Node::new(name.clone());
 
         self.nodes.push(SimNode {
@@ -201,6 +210,7 @@ impl Sandbox {
     pub fn step(&mut self) {
         self.clock += self.dt;
         let now = self.clock;
+        self.now.set(now);
 
         for idx in 0..self.nodes.len() {
             let mut relays: Vec<Vec<u8>> = Vec::new();
@@ -257,6 +267,7 @@ impl Sandbox {
     /// the deterministic-sim semantics.
     pub fn send_from(&mut self, idx: usize, to: &str, body: String) -> bool {
         let now = self.clock;
+        self.now.set(now);
         let Some(node) = self.nodes.get_mut(idx) else {
             return false;
         };
@@ -419,9 +430,15 @@ mod tests {
     /// Build a sandbox with no seeded nodes so tests control exact
     /// positions and ranges.
     fn empty() -> Sandbox {
-        let medium = Rc::new(RefCell::new(Medium::new(DEFAULT_RANGE, 0.0, 1)));
+        let medium = Rc::new(RefCell::new(Medium::new(
+            DEFAULT_RANGE,
+            0.0,
+            1,
+            crate::field::WAVE_SPEED,
+        )));
         Sandbox {
             medium,
+            now: Rc::new(Cell::new(0)),
             nodes: Vec::new(),
             clock: 0,
             dt: DT,
@@ -460,6 +477,40 @@ mod tests {
         let far_node = &sandbox.nodes[far_away].chat;
         let missed = far_node.contacts().iter().all(|c| c.name != sender_name);
         assert!(missed, "out-of-range node should not have received it");
+    }
+
+    #[test]
+    fn relay_does_not_fire_before_the_packet_actually_arrives() {
+        // distance 10, WAVE_SPEED units/ms -> 200ms travel time = 4 ticks at
+        // DT=50ms. A relaying node must not retransmit (or the receiver hear
+        // anything) before that delay has actually elapsed.
+        let mut sandbox = empty();
+        let near = sandbox.add_node(Pos { x: 0.0, y: 0.0 });
+        let close_peer = sandbox.add_node(Pos { x: 10.0, y: 0.0 });
+        sandbox.pair(near, close_peer);
+        let close_peer_name = sandbox.nodes[close_peer].name.clone();
+        sandbox.send_from(near, &close_peer_name, "hi".to_string());
+
+        for _ in 0..3 {
+            sandbox.step();
+        }
+        assert!(
+            sandbox.nodes[close_peer].chat.contacts().is_empty()
+                || sandbox.nodes[close_peer]
+                    .chat
+                    .contacts()
+                    .iter()
+                    .all(|c| c.history.is_empty()),
+            "packet should still be in flight at t=150ms, not yet delivered"
+        );
+
+        sandbox.step(); // t=200ms: the packet has now arrived
+        let heard = sandbox.nodes[close_peer]
+            .chat
+            .contacts()
+            .iter()
+            .any(|c| c.history.iter().any(|m| m.body == "hi"));
+        assert!(heard, "packet should be delivered once its delay elapses");
     }
 
     #[test]
