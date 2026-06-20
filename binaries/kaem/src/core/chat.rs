@@ -32,8 +32,10 @@ impl Chat {
         self.node.contacts()
     }
 
-    pub fn selected_contact(&self) -> &Contact {
-        &self.node.contacts()[self.selected]
+    /// The currently selected contact, or `None` if the contact list is
+    /// empty (e.g. before any contact has been seeded or paired).
+    pub fn selected_contact(&self) -> Option<&Contact> {
+        self.node.contacts().get(self.selected)
     }
 
     pub fn next_contact(&mut self) {
@@ -55,15 +57,18 @@ impl Chat {
 
     /// Send the current input to the selected contact: fold it into the node
     /// (records it locally and encodes it), then transmit every resulting
-    /// frame over the radio.
+    /// frame over the radio. A no-op if there is no selected contact (empty
+    /// contact list) — there's nowhere to address the message.
     pub fn send_message(&mut self) {
         let body = self.input.value().trim().to_string();
         if body.is_empty() {
             return;
         }
+        let Some(to) = self.selected_contact().map(|c| c.name.clone()) else {
+            return;
+        };
         self.input = Input::default();
 
-        let to = self.selected_contact().name.clone();
         let now = now_ms();
         let outbound = self.node.command(Command::Send { to, body }, now);
         for out in outbound {
@@ -90,4 +95,31 @@ impl Chat {
 
 fn now_ms() -> kaem_node::Time {
     chrono::Utc::now().timestamp_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard: an empty contact list (e.g. a freshly paired mesh
+    /// node before any chatroom exists) must never panic on indexing —
+    /// `selected_contact` returning `None`, and `send_message` no-op'ing, are
+    /// what every call site relies on.
+    #[test]
+    fn empty_contacts_never_panics() {
+        let mut chat = Chat::new(
+            Vec::new(),
+            Box::new(kaem_loopback::Loopback::new()),
+            "me".into(),
+        );
+        assert!(chat.selected_contact().is_none());
+
+        chat.next_contact();
+        chat.previous_contact();
+        assert!(chat.selected_contact().is_none());
+
+        chat.input = Input::new("hi".to_string());
+        chat.send_message();
+        assert!(chat.contacts().is_empty());
+    }
 }

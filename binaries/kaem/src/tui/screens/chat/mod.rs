@@ -17,7 +17,9 @@ pub fn render(chat: &Chat, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(conversation);
 
     frame.render_widget(Sidebar::new(chat.contacts(), chat.selected), sidebar);
-    frame.render_widget(MessagePanel::new(chat.selected_contact()), messages);
+    if let Some(contact) = chat.selected_contact() {
+        frame.render_widget(MessagePanel::new(contact), messages);
+    }
     frame.render_widget(InputBar::new(&chat.input), input);
     frame.render_widget(StatusBar::new(chat.encrypted), status);
 }
